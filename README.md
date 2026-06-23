@@ -50,6 +50,20 @@ Chaque agent l'utilise via deux mécanismes côté client :
 
 Copie/clone le dossier `mailbox-handoff` sur chaque machine concernée, puis :
 
+> ### ⚙️ Prérequis : autoriser l'exécution de scripts PowerShell
+> Par défaut Windows bloque les `.ps1` (« *l'exécution de scripts est désactivée sur
+> ce système* »). Une fois par machine, autorise les scripts pour ton utilisateur
+> (les scripts locaux passent, les scripts distants non signés restent bloqués) :
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned   # réponds O
+> ```
+> Alternative ponctuelle, sans rien changer au système :
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File .\setup-server.ps1 -Persist
+> ```
+> Node.js (≥ 18) doit être installé sur la machine **serveur**. Les options `-Persist`
+> et l'ouverture du pare-feu requièrent un PowerShell lancé **en Administrateur**.
+
 ### 1. Sur la machine SERVEUR — lancer le broker
 
 ```powershell
