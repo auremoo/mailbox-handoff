@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- mailbox-handoff — Auteur : Aurélien Moote - Moo - 2026 — https://github.com/auremoo/mailbox-handoff — Licence MIT -->
 <html lang="fr">
 <head>
 <meta charset="utf-8">
@@ -60,6 +61,8 @@
   .sidebar-foot{border-top:1px solid var(--line);padding-top:12px;margin-top:8px}
   .sidebar-foot .row{display:flex;gap:6px}
   .sidebar-foot input{padding:6px 8px;font-size:12px}
+  .credit{margin-top:12px;text-align:center;font-size:11px;color:var(--faint);letter-spacing:.02em}
+  .credit a{color:var(--faint)} .credit a:hover{color:var(--muted);text-decoration:underline}
 
   /* ---- Content ---- */
   .content{flex:1 1 auto;overflow:hidden;display:flex;flex-direction:column}
@@ -181,6 +184,11 @@
       <div class="row">
         <input id="token" type="password" placeholder="MAILBOX_TOKEN" autocomplete="off">
         <button class="ghost sm" onclick="saveToken()">OK</button>
+      </div>
+      <div class="credit" title="Créé par Aurélien Moote">
+        <a href="https://github.com/auremoo/mailbox-handoff" target="_blank" rel="noopener">
+          Aurélien Moote - Moo - 2026
+        </a>
       </div>
     </div>
   </aside>

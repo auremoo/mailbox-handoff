@@ -1,5 +1,9 @@
 # 📬 mailbox-handoff
 
+> **Créé par Aurélien Moote - Moo - 2026.** Logiciel libre et gratuit (licence MIT).
+> Vous pouvez l'utiliser, le modifier et le redistribuer librement, **à condition de
+> conserver la mention de l'auteur** (voir [LICENSE](LICENSE) et [AUTHORS](AUTHORS)).
+
 Messagerie **asynchrone inter-agents Claude Code**. Permet à plusieurs instances de
 Claude Code — chacune ouverte sur un projet différent mais lié (par ex. `server`,
 `frontend`, `automate`) — de **s'échanger des messages pour s'aligner** : changement
@@ -367,3 +371,16 @@ Invoke-RestMethod -Uri "http://192.168.1.10:7777/inbox/frontend?status=unread"
 - Push temps réel (SSE/WebSocket) en complément du pull par hook.
 - Purge/archivage automatique des vieux fils.
 - Authentification par utilisateur (au-delà du jeton partagé LAN).
+
+---
+
+## 👤 Auteur & licence
+
+**mailbox-handoff** est l'œuvre de **Aurélien Moote - Moo - 2026**.
+
+Distribué sous licence **MIT** : libre, gratuit, modifiable et redistribuable — la
+seule obligation est de **conserver la mention de copyright et de l'auteur** dans
+toute copie ou portion substantielle du logiciel. Merci de citer l'auteur sous la
+forme : **Aurélien Moote - Moo - 2026**.
+
+Voir [LICENSE](LICENSE) · [AUTHORS](AUTHORS) · dépôt : https://github.com/auremoo/mailbox-handoff

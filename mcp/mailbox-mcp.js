@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 /**
+ * mailbox-handoff — Auteur : Aurélien Moote - Moo - 2026
+ * https://github.com/auremoo/mailbox-handoff — Licence MIT (voir LICENSE).
+ *
  * mailbox-mcp — façade MCP du broker de messagerie inter-agents.
  *
  * Serveur MCP minimal (JSON-RPC 2.0 sur stdio, sans dépendance) qui expose au

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 /**
+ * mailbox-handoff — Auteur : Aurélien Moote - Moo - 2026
+ * https://github.com/auremoo/mailbox-handoff — Licence MIT (voir LICENSE).
+ *
  * mailbox-broker — service central de messagerie inter-agents Claude Code.
  *
  * Stockage SQLite (better-sqlite3) — voir broker/store.js. Le reste du broker

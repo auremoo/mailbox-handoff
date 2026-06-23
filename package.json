@@ -2,6 +2,9 @@
   "name": "mailbox-handoff",
   "version": "0.1.0",
   "description": "Messagerie asynchrone inter-agents Claude Code : un broker réseau et des hooks pour aligner plusieurs projets liés (server / frontend / automate).",
+  "author": "Aurélien Moote - Moo - 2026",
+  "homepage": "https://github.com/auremoo/mailbox-handoff",
+  "repository": { "type": "git", "url": "https://github.com/auremoo/mailbox-handoff.git" },
   "type": "commonjs",
   "bin": {
     "mailbox-broker": "broker/server.js",
