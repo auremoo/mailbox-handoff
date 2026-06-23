@@ -142,7 +142,12 @@
           <label>Jeton partagé (optionnel)</label><input id="c_token" placeholder="(vide si pas de MAILBOX_TOKEN)" oninput="genConfig()">
         </div>
       </div>
-      <label style="margin-top:14px">Commande à lancer (PowerShell, dossier <span class="mono">mailbox-handoff</span>)</label>
+      <label style="margin-top:14px">Brancher cette machine cliente — 2 options</label>
+      <div class="row" style="margin-bottom:6px">
+        <div style="flex:0 0 auto"><button onclick="downloadClientCmd()">⬇ Télécharger le .cmd (double-clic sur le client)</button></div>
+        <div class="muted" style="align-self:center">Place le fichier dans le dossier <span class="mono">mailbox-handoff</span> de la machine cliente, puis double-clique.</div>
+      </div>
+      <label>…ou commande à coller (PowerShell, dossier <span class="mono">mailbox-handoff</span>)</label>
       <pre><button class="copy secondary" onclick="copyPre(this)">copier</button><code id="c_cmd"></code></pre>
       <div class="grid2">
         <div><label>.mailbox.json</label><pre><button class="copy secondary" onclick="copyPre(this)">copier</button><code id="c_mailbox"></code></pre></div>
@@ -359,6 +364,33 @@ function genConfig(){
 function copyPre(btn){
   var code=btn.parentElement.querySelector('code').textContent;
   navigator.clipboard.writeText(code).then(function(){toast('Copié.');},function(){toast('Copie impossible.');});
+}
+function downloadClientCmd(){
+  var p=document.getElementById('c_project').value.trim();
+  if(!p){ toast('Renseigne au moins le nom du projet.'); return; }
+  var dir=document.getElementById('c_dir').value.trim()||'%CD%';
+  var broker=document.getElementById('c_broker').value.trim()||location.origin;
+  var token=document.getElementById('c_token').value.trim();
+  var chans=document.getElementById('c_channels').value.split(',').map(function(c){return c.trim();}).filter(Boolean);
+  // Construit la commande PowerShell (arguments entre guillemets pour les espaces).
+  var ps='.\\setup-client.ps1 -Project '+p+' -Broker '+broker+' -ProjectDir "'+dir+'"';
+  if(chans.length) ps+=' -Channels '+chans.join(',');
+  if(token) ps+=' -Token '+token;
+  var lines=[
+    '@echo off',
+    'REM Genere par l interface web mailbox. Placez ce .cmd dans le dossier',
+    'REM mailbox-handoff de la machine cliente, puis double-cliquez.',
+    'cd /d "%~dp0"',
+    'powershell -NoProfile -ExecutionPolicy Bypass -Command "'+ps.replace(/"/g,'\\"')+'"',
+    'pause'
+  ];
+  var blob=new Blob([lines.join('\r\n')+'\r\n'],{type:'application/octet-stream'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='install-client-'+p.replace(/[^a-zA-Z0-9_-]/g,'_')+'.cmd';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+  toast('.cmd téléchargé — à double-cliquer dans le dossier mailbox-handoff du client.');
 }
 
 async function loadAdmin(){

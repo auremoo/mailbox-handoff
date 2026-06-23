@@ -208,9 +208,10 @@ if (-not $NoStart) {
     $env:MAILBOX_PORT = "$Port"
     if ($Token) { $env:MAILBOX_TOKEN = $Token }
     Write-Host "`n🚀 Lancement du broker (Ctrl+C pour arrêter)...`n" -ForegroundColor Green
-    Write-Host "   Sur chaque CLIENT, lance :" -ForegroundColor Cyan
-    $tokenArg = if ($Token) { " -Token $Token" } else { "" }
-    Write-Host "   .\setup-client.ps1 -Project <nom> -Broker $brokerUrl$tokenArg -ProjectDir <chemin-du-projet>`n" -ForegroundColor Cyan
+    Write-Host "   👉 Interface web (tout se pilote ici) : http://localhost:$Port/" -ForegroundColor Cyan
+    Write-Host "      (onglet « Serveur » pour installer le service, « Config client » pour brancher les machines)`n"
+    # Ouvre la page web dans le navigateur par défaut (l'UI prend le relais).
+    try { Start-Process "http://localhost:$Port/" | Out-Null } catch { }
     node $brokerJs
 } else {
     Write-Host "`n(broker non démarré : -NoStart)"

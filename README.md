@@ -46,90 +46,80 @@ Chaque agent l'utilise via deux mécanismes côté client :
 
 ---
 
-## 🚀 Installation facile (2 commandes)
+## 🚀 Démarrage (tout se pilote dans l'interface web)
 
-Copie/clone le dossier `mailbox-handoff` sur chaque machine concernée, puis :
+Tout se fait dans une **page web** servie par le broker (monitoring, installation du
+service, branchement des clients, guide). La **seule** action hors navigateur est **un
+double-clic** pour démarrer le serveur — une page web ne peut pas se lancer toute seule.
 
-> ### ⚙️ Prérequis : autoriser l'exécution de scripts PowerShell
-> Par défaut Windows bloque les `.ps1` (« *l'exécution de scripts est désactivée sur
-> ce système* »). Une fois par machine, autorise les scripts pour ton utilisateur
-> (les scripts locaux passent, les scripts distants non signés restent bloqués) :
-> ```powershell
-> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned   # réponds O
-> ```
-> Alternative ponctuelle, sans rien changer au système :
-> ```powershell
-> powershell -ExecutionPolicy Bypass -File .\setup-server.ps1 -Persist
-> ```
-> Node.js (≥ 18) doit être installé sur la machine **serveur**. Les options `-Persist`
-> et l'ouverture du pare-feu requièrent un PowerShell lancé **en Administrateur**.
+> ### ⚙️ Prérequis (machine serveur uniquement)
+> **Node.js ≥ 18** installé (https://nodejs.org, LTS). C'est tout : `start-server.cmd`
+> s'occupe du reste (dépendances `npm`, pare-feu, élévation Administrateur).
 
-### 1. Sur la machine SERVEUR — lancer le broker
+### 1️⃣ Serveur — un double-clic
 
+Sur la machine qui héberge la messagerie, dans le dossier `mailbox-handoff` :
+**double-clique sur `start-server.cmd`** et accepte l'invite Windows (UAC).
+
+→ Il installe les dépendances, ouvre le port au pare-feu, démarre le broker et **ouvre
+automatiquement la page web** sur `http://localhost:7777/`.
+
+### 2️⃣ Tout le reste, dans la page web
+
+| Onglet            | Ce que tu y fais                                                            |
+|-------------------|-----------------------------------------------------------------------------|
+| **Serveur**       | Bouton **« Installer le service »** → le broker devient un vrai service Windows (démarre seul au boot, même sans session ouverte). |
+| **Config client** | Remplis projet / chemin / canaux → **« Télécharger le .cmd »** (ou copie la commande) pour brancher une machine cliente. |
+| **Fils / Registre / Envoyer** | Suivre les conversations, voir les projets/canaux connus, tester un envoi ou une réponse. |
+| **Guide**         | Tutoriels intégrés : install & **mises à jour** (serveur + client), service, canaux, dépannage. |
+
+### 3️⃣ Client — un double-clic
+
+Sur chaque machine cliente (= là où un agent Claude Code travaille sur ton projet) :
+
+1. dans l'onglet **Config client** de la page web, télécharge le **`.cmd`** (pré-rempli pour ce projet) ;
+2. place-le dans le dossier `mailbox-handoff` de la machine cliente et **double-clique** ;
+3. **recharge la session Claude Code** du projet → réception automatique des messages + tools MCP actifs.
+
+> 💡 **Deux dossiers à ne pas confondre** : `mailbox-handoff` (la boîte à outils) vs **ton
+> vrai projet** (ton code — c'est lui que vise le champ « chemin », et c'est là que sont
+> déposés `.mailbox.json` / `.mcp.json`).
+
+> 💡 **Un agent tourne aussi sur la machine serveur ?** Broker et client sont indépendants —
+> branche le client en plus sur le serveur (dans Config client, mets le broker à `http://127.0.0.1:7777`).
+
+> 🔄 **Mettre à jour.** Serveur : `git pull` puis re-double-clic sur `start-server.cmd` (les
+> données sont migrées automatiquement). Client : re-télécharge le `.cmd` et double-clique.
+> Le pas-à-pas complet est dans l'onglet **Guide** de la page web.
+
+---
+
+## 🧰 Alternative : en ligne de commande
+
+Tout ce que fait l'interface web est aussi disponible en scripts (pratique pour automatiser,
+ou si tu préfères le terminal). Les `.ps1` exigent d'autoriser l'exécution PowerShell une fois :
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` (ou `powershell -ExecutionPolicy Bypass -File …`).
+
+**Serveur** (PowerShell Administrateur, dossier `mailbox-handoff`) :
 ```powershell
-# PowerShell en Administrateur (pour le pare-feu) :
-cd mailbox-handoff
-.\setup-server.ps1
-```
-
-Le script détecte l'**IP LAN**, ouvre le **port 7777** dans le pare-feu, démarre le
-broker et affiche la **commande exacte à coller sur les clients**. Options utiles :
-
-```powershell
-.\setup-server.ps1 -Service          # installe un VRAI service Windows (auto-démarrage, sans session)
+.\setup-server.ps1                   # IP LAN + pare-feu + broker en avant-plan + ouvre l'UI
+.\setup-server.ps1 -Service          # VRAI service Windows (auto-démarrage, sans session) — via NSSM embarqué
 .\setup-server.ps1 -RemoveService    # désinstalle le service
-.\setup-server.ps1 -Persist          # repli : tâche planifiée à l'ouverture de session
 .\setup-server.ps1 -Token monjeton   # exige un jeton partagé (clients : -Token monjeton)
 .\setup-server.ps1 -Port 8080        # autre port
 ```
 
-> 🖥️ **Service Windows.** `-Service` enregistre le broker comme **vrai service** (via NSSM,
-> **embarqué** dans `vendor/nssm/nssm.exe` — rien à télécharger) : il démarre **sans session
-> ouverte** et redémarre tout seul en cas de crash. Nécessite un PowerShell **Administrateur**.
-> Les logs vont dans `data/broker.out.log` / `.err.log`. Pour désinstaller : `-RemoveService`.
-
-> 📊 **Monitoring web + installation du service en 1 clic.** Le broker sert une page de
-> supervision sur **`http://<ip>:<port>/`** : état, registre des projets/canaux, fils de
-> discussion (dépliables), envoi/réponse de test, **générateur de config client**, et un onglet
-> **Serveur** qui **installe/désinstalle le service Windows directement depuis l'UI**. L'onglet
-> Serveur n'est actif que depuis la machine serveur (`http://localhost:<port>/`) et avec le broker
-> lancé en **PowerShell Admin** (l'installation d'un service exige l'élévation).
-
-### 2. Sur chaque machine CLIENTE — rattacher le projet
-
-> **Deux dossiers à ne pas confondre :**
-> - `mailbox-handoff` = la boîte à outils, d'où tu **lances** le script ;
-> - **ton vrai projet** (ton code frontend / automate / server) = ce que `-ProjectDir`
->   doit pointer. C'est là que l'agent Claude Code travaille, et c'est là que le script
->   dépose `.mailbox.json` + `.mcp.json`.
->
-> Tu n'as **pas besoin** d'avoir Claude Code ouvert pendant l'installation : tu lances
-> le script dans un PowerShell normal, puis tu (r)ouvres Claude Code dans ton projet.
-
+**Client** (sur la machine cliente, dossier `mailbox-handoff`) :
 ```powershell
-cd mailbox-handoff                       # le dossier des scripts
-# -ProjectDir = le chemin de TON projet (PAS mailbox-handoff) :
-.\setup-client.ps1 -Project frontend -Broker http://192.168.1.10:7777 -ProjectDir D:\dev\mon-frontend
+.\setup-client.ps1 -Project frontend -Broker http://192.168.1.10:7777 -ProjectDir D:\dev\mon-frontend -Channels auth
+.\setup-client.ps1                   # sans argument : pose les questions une par une
 ```
-
-> 💡 Le plus simple : lance **`.\setup-client.ps1` sans aucun argument** — il pose les
-> questions une par une (nom du projet, URL du broker, chemin du projet, canaux).
-
-Le script vérifie que le broker répond, puis installe scripts, hooks, commande `/msg`,
-serveur MCP et écrit `.mailbox.json` + `.mcp.json` dans ton projet.
-**Ouvre ou recharge ensuite la session Claude Code de ce projet** pour activer hooks et tools MCP.
-
-> ### 💡 Un agent Claude tourne AUSSI sur la machine serveur ?
-> Broker et client sont **indépendants** : le broker ne rend pas son hôte participant.
-> Installe donc le client **en plus** sur la machine serveur, en pointant vers le broker
-> local :
-> ```powershell
-> .\setup-client.ps1 -Project server -Broker http://127.0.0.1:7777 -ProjectDir C:\dev\mon-server
-> ```
+Recharge ensuite la session Claude Code du projet. Pour **mettre à jour / réparer** un client
+déjà installé : `.\install.ps1 -SkipProject`.
 
 ---
 
-## 🔧 Installation manuelle (équivalent, étape par étape)
+## 🔧 Détail des scripts (équivalent bas niveau)
 
 ### Lancer le broker à la main
 
@@ -292,6 +282,8 @@ mailbox-handoff/
 │  └─ ui.html              # interface web servie sur / (monitoring, config, guide)
 ├─ vendor/
 │  └─ nssm/nssm.exe        # wrapper de service Windows (embarqué dans le dépôt)
+├─ start-server.cmd        # ▶ DOUBLE-CLIC : démarre le broker + ouvre l'UI (serveur)
+├─ start-server.ps1        # lanceur auto-élevé appelé par start-server.cmd
 ├─ client/
 │  ├─ mailbox-check.ps1    # hook de réception (déployé vers ~/.claude/)
 │  └─ mailbox-send.ps1     # envoi par script (déployé vers ~/.claude/)
