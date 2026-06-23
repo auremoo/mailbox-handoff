@@ -66,7 +66,7 @@
 
   /* ---- Content ---- */
   .content{flex:1 1 auto;overflow:hidden;display:flex;flex-direction:column}
-  .view{display:none;flex:1 1 auto;overflow:hidden;flex-direction:column}
+  .view{display:none;flex:1 1 auto;min-height:0;overflow:hidden;flex-direction:column}
   .view.active{display:flex}
   .vhead{display:flex;align-items:center;gap:12px;padding:18px 22px 14px;border-bottom:1px solid var(--line)}
   .vhead h1{font-size:17px;margin:0;font-weight:650}
@@ -90,14 +90,14 @@
   .tag.bad{color:var(--err);border-color:#f8514955}
 
   /* ---- Conversations (master/detail) ---- */
-  .conv{display:flex;flex:1 1 auto;overflow:hidden}
+  .conv{display:flex;flex:1 1 auto;min-height:0;overflow:hidden}
   .conv-list{width:340px;flex:0 0 340px;border-right:1px solid var(--line);display:flex;flex-direction:column}
   .conv-tools{padding:12px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
   .conv-tools .chips{display:flex;gap:6px;flex-wrap:wrap}
   .chip{font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid var(--line2);
     background:var(--bg);color:var(--muted);cursor:pointer;font-weight:500}
   .chip.active{background:var(--accent);border-color:var(--accent);color:#fff}
-  .conv-items{flex:1 1 auto;overflow-y:auto}
+  .conv-items{flex:1 1 auto;min-height:0;overflow-y:auto}
   .conv-item{padding:12px 14px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;flex-direction:column;gap:5px}
   .conv-item:hover{background:var(--panel)}
   .conv-item.active{background:var(--panel2);box-shadow:inset 3px 0 0 var(--accent)}
@@ -110,8 +110,8 @@
   .conv-detail{flex:1 1 auto;display:flex;flex-direction:column;overflow:hidden}
   .conv-detail .dhead{padding:16px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
   .conv-detail .dhead .t{font-weight:650;font-size:15px}
-  .msgs{flex:1 1 auto;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:14px}
-  .msg{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);overflow:hidden}
+  .msgs{flex:1 1 auto;min-height:0;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:14px}
+  .msg{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);overflow:hidden;flex:0 0 auto}
   .msg .mhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px;background:var(--panel2);
     border-bottom:1px solid var(--line);font-size:12.5px}
   .msg .mhead .who{font-weight:650} .msg .mhead .arrow{color:var(--faint)}
