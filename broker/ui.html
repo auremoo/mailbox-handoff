@@ -337,6 +337,18 @@
             <li><b>Répondre</b> reste dans le même fil (bouton Répondre d'une conversation, ou tool MCP <span class="mono">mailbox_reply</span>).</li>
           </ul>
         </div>
+        <div class="card">
+          <h2>🧩 Famille d'outils Claude Code</h2>
+          <p class="muted" style="margin-top:0">Outils complémentaires (indépendants de la mailbox) :</p>
+          <ul class="muted">
+            <li><b>handoff-system</b> — passe le contexte d'une session Claude à un autre LLM (Gemini, Copilot…)
+              via un <span class="mono">CONTEXT.md</span>. Deux commandes (<span class="mono">/handoff</span>,
+              <span class="mono">/init-context</span>) à copier dans <span class="mono">.claude/commands/</span> du projet.
+              <a href="https://github.com/auremoo/handoff-system" target="_blank" rel="noopener">github.com/auremoo/handoff-system</a>.</li>
+          </ul>
+          <div class="callout">À ne pas confondre avec la mailbox : handoff est <b>local au projet</b> et <b>fichier</b>
+          (pas de serveur), là où la mailbox fait dialoguer des agents <b>en réseau</b>.</div>
+        </div>
       </div></div>
     </section>
   </div>
