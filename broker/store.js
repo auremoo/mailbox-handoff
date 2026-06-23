@@ -159,6 +159,66 @@ function countMessages() {
   return db.prepare('SELECT COUNT(*) AS c FROM messages').get().c;
 }
 
+function countUnread() {
+  return db.prepare("SELECT COUNT(*) AS c FROM messages WHERE status = 'unread'").get().c;
+}
+
+// Clé de conversation d'un message : un canal (#x), la diffusion (*), ou la paire
+// de projets pour un échange direct (triée -> A↔B = B↔A = une seule conversation).
+function convKeyOf(sender, recipient) {
+  if (recipient === '*') return { key: '*', kind: 'bcast', label: 'Diffusion', members: null };
+  if (recipient.charAt(0) === '#') return { key: recipient, kind: 'chan', label: recipient, members: null };
+  const pair = [sender, recipient].sort();
+  return { key: '@' + pair.join('|'), kind: 'dir', label: pair.join(' ↔ '), members: pair };
+}
+
+// Regroupe TOUS les messages en conversations (par canal / diffusion / paire directe).
+// C'est la vue "boîte mail" : un canal = une conversation (tous ses fils fondus).
+function listConversations() {
+  const rows = db.prepare(
+    "SELECT id, sender, recipient, subject, status, createdAt, substr(body,1,160) AS snippet FROM messages ORDER BY rowid ASC"
+  ).all();
+  const groups = new Map();
+  for (const r of rows) {
+    const k = convKeyOf(r.sender, r.recipient);
+    let g = groups.get(k.key);
+    if (!g) {
+      g = { key: k.key, kind: k.kind, label: k.label, members: k.members,
+            count: 0, unread: 0, senders: new Set(), lastAt: null, lastFrom: null, subject: '', snippet: '' };
+      groups.set(k.key, g);
+    }
+    g.count += 1;
+    if (r.status === 'unread') g.unread += 1;
+    g.senders.add(r.sender);
+    g.lastAt = r.createdAt; g.lastFrom = r.sender; g.snippet = r.snippet || '';
+    if (r.subject) g.subject = r.subject; // dernier sujet non vide
+  }
+  return [...groups.values()]
+    .map((g) => ({ key: g.key, kind: g.kind, label: g.label, members: g.members,
+                   count: g.count, unread: g.unread, participants: [...g.senders],
+                   lastAt: g.lastAt, lastFrom: g.lastFrom, subject: g.subject, snippet: g.snippet }))
+    .sort((a, b) => (a.lastAt < b.lastAt ? 1 : a.lastAt > b.lastAt ? -1 : 0));
+}
+
+// Tous les messages d'une conversation, triés chronologiquement.
+function getConversation(key) {
+  let rows;
+  if (key === '*') {
+    rows = db.prepare("SELECT * FROM messages WHERE recipient = '*' ORDER BY createdAt ASC, rowid ASC").all();
+  } else if (key.charAt(0) === '#') {
+    rows = db.prepare('SELECT * FROM messages WHERE recipient = ? ORDER BY createdAt ASC, rowid ASC').all(key);
+  } else if (key.charAt(0) === '@') {
+    const pair = key.slice(1).split('|');
+    rows = db.prepare(
+      "SELECT * FROM messages WHERE recipient NOT LIKE '#%' AND recipient <> '*' AND " +
+      '((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) ORDER BY createdAt ASC, rowid ASC'
+    ).all(pair[0], pair[1], pair[1], pair[0]);
+  } else {
+    rows = [];
+  }
+  return rows.map(rowToMsg);
+}
+
 // Liste les fils (pour le monitoring) : un par threadId racine, avec compteurs
 // et dernier message. Trié du fil le plus récemment actif au plus ancien.
 function listThreads() {
@@ -281,5 +341,6 @@ function init(dataFile) {
 
 module.exports = {
   init, nextId, addMessage, findMessage, getInbox, getThread,
-  ackIds, countMessages, listThreads, upsertRegistry, getRegistry,
+  ackIds, countMessages, countUnread, listThreads, listConversations, getConversation,
+  upsertRegistry, getRegistry,
 };

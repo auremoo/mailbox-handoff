@@ -338,9 +338,10 @@
 <script>
 'use strict';
 var TOKEN = sessionStorage.getItem('mbtoken') || '';
-var THREADS = [];        // cache de /threads
+var CONVOS = [];         // cache de /conversations (boîte mail regroupée)
 var FILTER = 'all';      // all | #canal | * | direct
-var CURRENT = null;      // threadId ouvert
+var CURRENT = null;      // clé de conversation ouverte
+var CURRENTCONV = null;  // objet conversation ouvert
 
 document.getElementById('token').value = TOKEN;
 
@@ -384,10 +385,17 @@ function buildNav(){
 }
 
 /* ---------- Health ---------- */
+function setUnread(n){
+  var nu=document.getElementById('navUnread');
+  if(n>0){nu.style.display='';nu.textContent=n;}else{nu.style.display='none';}
+}
 async function loadHealth(){
   var el=document.getElementById('health');
   try{var h=await api('GET','/health');
-    el.innerHTML='<span class="dot ok"></span><span>en ligne · '+h.messages+' message(s)</span>';
+    var n=h.unread||0;
+    var txt=n>0?(n+' non‑lu'+(n>1?'s':'')):'à jour';
+    el.innerHTML='<span class="dot ok"></span><span>en ligne · '+txt+'</span>';
+    setUnread(n);
   }catch(e){el.innerHTML='<span class="dot err"></span><span>broker injoignable</span>';}
 }
 
@@ -397,17 +405,16 @@ function destInfo(to){
   if(to&&to.charAt(0)==='#')return{cls:'chan',label:to,icon:'#'};
   return{cls:'dir',label:to||'?',icon:'→'};
 }
-async function loadThreads(){
-  try{var d=await api('GET','/threads');THREADS=d.threads||[];}
-  catch(e){THREADS=[];}
-  var unread=THREADS.reduce(function(n,t){return n+(t.unread||0);},0);
-  var nu=document.getElementById('navUnread');
-  if(unread>0){nu.style.display='';nu.textContent=unread;}else{nu.style.display='none';}
+async function loadConversations(){
+  try{var d=await api('GET','/conversations');CONVOS=d.conversations||[];}
+  catch(e){CONVOS=[];}
+  var unread=CONVOS.reduce(function(n,c){return n+(c.unread||0);},0);
+  setUnread(unread);
   buildChips();renderConvList();
-  if(CURRENT){var still=THREADS.some(function(t){return t.threadId===CURRENT;});if(still)openThread(CURRENT,true);}
+  if(CURRENT){var still=CONVOS.some(function(c){return c.key===CURRENT;});if(still)openConv(CURRENT,true);}
 }
 function buildChips(){
-  var chans={};THREADS.forEach(function(t){if(t.to&&t.to.charAt(0)==='#')chans[t.to]=1;});
+  var chans={};CONVOS.forEach(function(c){if(c.kind==='chan')chans[c.key]=1;});
   var chips=[['all','Tous']];
   Object.keys(chans).sort().forEach(function(c){chips.push([c,c]);});
   chips.push(['*','Diffusion']);chips.push(['direct','Directs']);
@@ -416,63 +423,71 @@ function buildChips(){
   }).join('');
 }
 function setFilter(f){FILTER=f;buildChips();renderConvList();}
-function matchFilter(t){
+function matchFilter(c){
   if(FILTER==='all')return true;
-  if(FILTER==='*')return t.to==='*';
-  if(FILTER==='direct')return t.to&&t.to.charAt(0)!=='#'&&t.to!=='*';
-  return t.to===FILTER;
+  if(FILTER==='*')return c.kind==='bcast';
+  if(FILTER==='direct')return c.kind==='dir';
+  return c.key===FILTER; // un canal précis
 }
 function renderConvList(){
   var q=(document.getElementById('convSearch').value||'').toLowerCase();
   var box=document.getElementById('convItems');
-  var list=THREADS.filter(matchFilter).filter(function(t){
+  var list=CONVOS.filter(matchFilter).filter(function(c){
     if(!q)return true;
-    var hay=((t.subject||'')+' '+(t.to||'')+' '+(t.participants||[]).join(' ')+' '+((t.last&&t.last.body)||'')).toLowerCase();
+    var hay=((c.label||'')+' '+(c.subject||'')+' '+(c.participants||[]).join(' ')+' '+(c.snippet||'')).toLowerCase();
     return hay.indexOf(q)>=0;
   });
   if(!list.length){box.innerHTML='<div class="empty"><div class="big">📭</div><div>Aucune conversation.</div></div>';return;}
-  box.innerHTML=list.map(function(t){
-    var di=destInfo(t.to);
-    var subj=t.subject?esc(t.subject):'<span class="muted">(sans sujet)</span>';
-    var snip=t.last?esc((t.last.from||'')+' : '+(t.last.body||'').replace(/\s+/g,' ').slice(0,80)):'';
-    return '<div class="conv-item'+(CURRENT===t.threadId?' active':'')+'" onclick="openThread(\''+esc(t.threadId)+'\')">'+
-      '<div class="top">'+(t.unread>0?'<span class="udot"></span>':'')+
-        '<span class="tag '+di.cls+'">'+esc(di.label)+'</span>'+
-        '<span class="subj">'+subj+'</span></div>'+
+  box.innerHTML=list.map(function(c){
+    var title=c.kind==='dir'?esc(c.label):'<span class="tag '+clsOf(c)+'">'+esc(c.label)+'</span>';
+    var snip=c.snippet?esc((c.lastFrom||'')+' : '+(c.snippet||'').replace(/\s+/g,' ').slice(0,90)):'';
+    return '<div class="conv-item'+(CURRENT===c.key?' active':'')+'" onclick="openConv(\''+esc(c.key).replace(/'/g,"\\'")+'\')">'+
+      '<div class="top">'+(c.unread>0?'<span class="udot"></span>':'')+
+        '<span class="subj">'+title+'</span>'+
+        (c.unread>0?'<span class="tag dir">'+c.unread+'</span>':'')+'</div>'+
       '<div class="snippet">'+snip+'</div>'+
-      '<div class="meta"><span>'+esc((t.participants||[]).join(' ↔ '))+'</span><span>·</span><span>'+t.count+' msg</span>'+
-        '<span style="margin-left:auto">'+esc(fmtDate(t.lastAt))+'</span></div>'+
+      '<div class="meta"><span>'+esc((c.participants||[]).join(', '))+'</span><span>·</span><span>'+c.count+' msg</span>'+
+        '<span style="margin-left:auto">'+esc(fmtDate(c.lastAt))+'</span></div>'+
     '</div>';
   }).join('');
 }
-async function openThread(threadId,keepScroll){
-  CURRENT=threadId;
-  document.querySelectorAll('.conv-item').forEach(function(e){e.classList.toggle('active',false);});
+function clsOf(c){return c.kind==='chan'?'chan':c.kind==='bcast'?'bcast':'dir';}
+async function openConv(key,keep){
+  CURRENT=key;
+  var c=CONVOS.find(function(x){return x.key===key;})||{kind:'dir',label:key,participants:[]};
+  CURRENTCONV=c;
   renderConvList();
   document.getElementById('conv').classList.add('detailopen');
   var det=document.getElementById('convDetail');
-  var t=THREADS.find(function(x){return x.threadId===threadId;})||{};
-  var di=destInfo(t.to);
   var data;
-  try{data=await api('GET','/thread/'+encodeURIComponent(threadId));}catch(e){det.innerHTML='<div class="empty">Erreur de chargement.</div>';return;}
+  try{data=await api('GET','/conversation?key='+encodeURIComponent(key));}catch(e){det.innerHTML='<div class="empty">Erreur de chargement.</div>';return;}
   var msgs=data.messages||[];
   var last=msgs[msgs.length-1]||{};
-  var parts=t.participants||[];
-  var replyFrom=(last.to&&last.to.charAt(0)!=='#'&&last.to!=='*')?last.to:(parts.filter(function(p){return p!==last.from;})[0]||'');
+  // Destinataire de la réponse selon le type de conversation.
+  var replyTo,replyFrom;
+  if(c.kind==='chan'){replyTo=c.key;replyFrom=last.from||'';}
+  else if(c.kind==='bcast'){replyTo='*';replyFrom=last.from||'';}
+  else{ // direct : on répond à l'autre membre
+    var members=c.members||[last.from,last.to];
+    replyFrom=members.filter(function(m){return m!==last.from;})[0]||last.to||'';
+    replyTo=members.filter(function(m){return m!==replyFrom;})[0]||last.from||'';
+  }
   var unreadIds=msgs.filter(function(m){return m.status==='unread';}).map(function(m){return m.id;});
+  var head=c.kind==='dir'?esc(c.label):'<span class="tag '+clsOf(c)+'">'+esc(c.label)+'</span>';
   det.innerHTML=
     '<div class="dhead">'+
-      '<button class="ghost sm" onclick="closeThread()" title="Retour">‹</button>'+
-      '<span class="tag '+di.cls+'">'+esc(di.label)+'</span>'+
-      '<span class="t">'+(t.subject?esc(t.subject):'(sans sujet)')+'</span>'+
+      '<button class="ghost sm" onclick="closeConv()" title="Retour">‹</button>'+
+      '<span class="t">'+head+'</span>'+
+      '<span class="faint">'+msgs.length+' message(s)</span>'+
       '<span class="spacer" style="flex:1"></span>'+
-      (unreadIds.length?'<button class="ghost sm" onclick=\'ackThread('+JSON.stringify(unreadIds)+')\'>Marquer lu</button>':'')+
+      (unreadIds.length?'<button class="ghost sm" onclick=\'ackConv('+JSON.stringify(unreadIds)+')\'>Marquer lu</button>':'')+
     '</div>'+
     '<div class="msgs" id="msgs">'+msgs.map(renderMsg).join('')+'</div>'+
     '<div class="replybar">'+
-      '<div class="fromline"><label>Répondre en tant que</label><input id="r_from" value="'+esc(replyFrom)+'" placeholder="projet"></div>'+
-      '<div class="row"><textarea id="r_body" class="grow" placeholder="Ta réponse… (reste dans ce fil)" style="min-height:60px"></textarea>'+
-        '<button onclick="sendReply(\''+esc(last.id)+'\')">Répondre</button></div>'+
+      '<div class="fromline"><label>Envoyer en tant que</label><input id="r_from" value="'+esc(replyFrom)+'" placeholder="projet">'+
+        '<span class="faint">→ <span class="tag '+(c.kind==='chan'?'chan':c.kind==='bcast'?'bcast':'dir')+'">'+esc(c.kind==='dir'?replyTo:c.label)+'</span></span></div>'+
+      '<div class="row"><textarea id="r_body" class="grow" placeholder="Ton message dans cette conversation…" style="min-height:60px"></textarea>'+
+        '<button onclick="sendConvReply(\''+esc(String(replyTo)).replace(/'/g,"\\'")+'\')">Envoyer</button></div>'+
     '</div>';
   var mc=document.getElementById('msgs');if(mc)mc.scrollTop=mc.scrollHeight;
 }
@@ -487,17 +502,22 @@ function renderMsg(m){
       '<span class="faint mono">'+esc(m.id)+'</span><span class="faint">'+esc(fmtDate(m.createdAt))+'</span>'+
     '</div><div class="mbody">'+esc(m.body)+'</div></div>';
 }
-function closeThread(){document.getElementById('conv').classList.remove('detailopen');CURRENT=null;renderConvList();
+function closeConv(){document.getElementById('conv').classList.remove('detailopen');CURRENT=null;CURRENTCONV=null;renderConvList();
   document.getElementById('convDetail').innerHTML='<div class="empty"><div class="big">💬</div><div>Sélectionne une conversation.</div></div>';}
-async function ackThread(ids){try{await api('POST','/ack',{ids:ids});toast('Marqué(s) lu(s).');loadThreads();}catch(e){}}
-async function sendReply(replyTo){
+async function ackConv(ids){try{await api('POST','/ack',{ids:ids});toast('Marqué(s) lu(s).');await loadConversations();loadHealth();}catch(e){}}
+async function sendConvReply(to){
   var from=document.getElementById('r_from').value.trim();
   var body=document.getElementById('r_body').value.trim();
-  if(!from){toast('Indique « en tant que » (le projet qui répond).');return;}
-  if(!body){toast('Écris une réponse.');return;}
-  try{var r=await api('POST','/reply',{from:from,replyTo:replyTo,body:body});
-    toast('Réponse envoyée à '+r.to+'.');document.getElementById('r_body').value='';
-    await loadThreads();openThread(CURRENT,true);}catch(e){}
+  if(!from){toast('Indique « en tant que » (le projet émetteur).');return;}
+  if(!body){toast('Écris un message.');return;}
+  // Direct : recalcule le destinataire en fonction du "from" choisi.
+  if(CURRENTCONV&&CURRENTCONV.kind==='dir'){
+    var mem=CURRENTCONV.members||[];var other=mem.filter(function(m){return m!==from;})[0];
+    if(other)to=other;
+  }
+  try{var r=await api('POST','/messages',{from:from,to:to,body:body});
+    toast('Message envoyé à '+to+'.');document.getElementById('r_body').value='';
+    await loadConversations();loadHealth();openConv(CURRENT,true);}catch(e){}
 }
 
 /* ---------- Compose ---------- */
@@ -508,11 +528,11 @@ async function sendNew(){
   if(!from||!to||!body){toast('« De », « À » et « Message » sont requis.');return;}
   try{var r=await api('POST','/messages',{from:from,to:to,subject:document.getElementById('s_subject').value.trim(),body:body});
     toast('Message envoyé (id '+r.id+').');document.getElementById('s_body').value='';document.getElementById('s_subject').value='';
-    loadThreads();go('conversations');}catch(e){}
+    loadConversations();loadHealth();go('conversations');}catch(e){}
 }
 function fillDest(){
   // datalist des destinations connues (projets + canaux + *)
-  var set={};THREADS.forEach(function(t){if(t.to)set[t.to]=1;});
+  var set={};CONVOS.forEach(function(c){if(c.kind==='chan')set[c.key]=1;});
   api('GET','/registry').then(function(d){
     (d.projects||[]).forEach(function(p){set[p.project]=1;(p.channels||[]).forEach(function(c){set[c]=1;});});
     set['*']=1;
@@ -595,7 +615,7 @@ async function removeService(){if(!confirm('Désinstaller le service MailboxBrok
   catch(e){srvMsg('⚠ '+esc(e.message),false);}loadAdmin();}
 
 /* ---------- Boot ---------- */
-function refresh(){loadHealth();loadThreads();}
+function refresh(){loadHealth();loadConversations();}
 buildNav();
 document.getElementById('c_broker').value=location.origin;
 try{document.getElementById('brandPort').textContent=location.host;}catch(e){}
@@ -603,7 +623,7 @@ genConfig();
 var initial=(location.hash||'').replace('#','');
 if(initial&&document.querySelector('.navitem[data-view="'+initial+'"]'))go(initial);
 refresh();
-setInterval(function(){loadHealth();if(document.querySelector('.view[data-view="conversations"]').classList.contains('active'))loadThreads();},12000);
+setInterval(function(){loadHealth();if(document.querySelector('.view[data-view="conversations"]').classList.contains('active'))loadConversations();},12000);
 </script>
 </body>
 </html>

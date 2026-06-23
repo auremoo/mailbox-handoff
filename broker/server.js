@@ -133,7 +133,7 @@ async function route(req, res, url) {
 
   // GET /health — sonde de vie, pas de token requis.
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, service: 'mailbox-broker', messages: store.countMessages() });
+    return send(res, 200, { ok: true, service: 'mailbox-broker', messages: store.countMessages(), unread: store.countUnread() });
   }
 
   // GET / et /ui — page de monitoring (HTML autonome). Pas de token : la page
@@ -162,9 +162,22 @@ async function route(req, res, url) {
     return send(res, 200, { projects: store.getRegistry() });
   }
 
-  // GET /threads — liste des fils (monitoring UI).
+  // GET /threads — liste des fils (monitoring UI, héritée).
   if (req.method === 'GET' && url.pathname === '/threads') {
     return send(res, 200, { threads: store.listThreads() });
+  }
+
+  // GET /conversations — vue "boîte mail" : messages regroupés par canal /
+  // diffusion / paire directe (un canal = une seule conversation).
+  if (req.method === 'GET' && url.pathname === '/conversations') {
+    return send(res, 200, { conversations: store.listConversations() });
+  }
+
+  // GET /conversation?key=... — tous les messages d'une conversation, chronologiques.
+  if (req.method === 'GET' && url.pathname === '/conversation') {
+    const key = url.searchParams.get('key') || '';
+    const items = store.getConversation(key);
+    return send(res, 200, { key, count: items.length, messages: items });
   }
 
   // Endpoints d'administration (gestion du service Windows) : réservés à la
