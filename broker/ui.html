@@ -372,8 +372,9 @@ function copyPre(btn){
 }
 function downloadClientCmd(){
   var p=document.getElementById('c_project').value.trim();
-  if(!p){ toast('Renseigne au moins le nom du projet.'); return; }
-  var dir=document.getElementById('c_dir').value.trim()||'%CD%';
+  if(!p){ toast('Renseigne le nom du projet.'); return; }
+  var dir=document.getElementById('c_dir').value.trim();
+  if(!dir){ toast('Renseigne le CHEMIN du projet (où déposer .mailbox.json / .mcp.json) — pas le dossier mailbox-handoff.'); return; }
   var broker=document.getElementById('c_broker').value.trim()||location.origin;
   var token=document.getElementById('c_token').value.trim();
   var chans=document.getElementById('c_channels').value.split(',').map(function(c){return c.trim();}).filter(Boolean);
