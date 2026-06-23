@@ -113,9 +113,17 @@
   .msgs{flex:1 1 auto;min-height:0;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:14px}
   .msg{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);overflow:hidden;flex:0 0 auto}
   .msg .mhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px;background:var(--panel2);
-    border-bottom:1px solid var(--line);font-size:12.5px}
+    border-bottom:1px solid var(--line);font-size:12.5px;cursor:pointer;user-select:none}
+  .msg .mhead:hover{background:var(--elev)}
   .msg .mhead .who{font-weight:650} .msg .mhead .arrow{color:var(--faint)}
+  .chev{flex:0 0 auto;color:var(--muted);transition:transform .15s;font-size:11px;width:12px}
+  .msg.collapsed .chev{transform:rotate(-90deg)}
   .msg .mbody{padding:12px 14px;white-space:pre-wrap;word-break:break-word;overflow-x:auto;font-size:13.5px}
+  .msg.collapsed .mbody{display:none}
+  .msg.collapsed .mhead{border-bottom-color:transparent}
+  .mpreview{display:none;padding:9px 14px;color:var(--muted);font-size:13px;cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .msg.collapsed .mpreview{display:block}
   .replybar{border-top:1px solid var(--line);padding:12px 22px;background:var(--panel)}
   .replybar .row{display:flex;gap:8px;align-items:flex-end}
   .replybar .row > .grow{flex:1 1 auto}
@@ -480,9 +488,11 @@ async function openConv(key,keep){
       '<span class="t">'+head+'</span>'+
       '<span class="faint">'+msgs.length+' message(s)</span>'+
       '<span class="spacer" style="flex:1"></span>'+
+      (msgs.length>1?'<button class="ghost sm" onclick="expandAll(false)">Tout replier</button>'+
+        '<button class="ghost sm" onclick="expandAll(true)">Tout déplier</button>':'')+
       (unreadIds.length?'<button class="ghost sm" onclick=\'ackConv('+JSON.stringify(unreadIds)+')\'>Marquer lu</button>':'')+
     '</div>'+
-    '<div class="msgs" id="msgs">'+msgs.map(renderMsg).join('')+'</div>'+
+    '<div class="msgs" id="msgs">'+msgs.map(function(m,i){return renderMsg(m,i===msgs.length-1);}).join('')+'</div>'+
     '<div class="replybar">'+
       '<div class="fromline"><label>Envoyer en tant que</label><input id="r_from" value="'+esc(replyFrom)+'" placeholder="projet">'+
         '<span class="faint">→ <span class="tag '+(c.kind==='chan'?'chan':c.kind==='bcast'?'bcast':'dir')+'">'+esc(c.kind==='dir'?replyTo:c.label)+'</span></span></div>'+
@@ -491,17 +501,23 @@ async function openConv(key,keep){
     '</div>';
   var mc=document.getElementById('msgs');if(mc)mc.scrollTop=mc.scrollHeight;
 }
-function renderMsg(m){
+function renderMsg(m,expanded){
   var di=destInfo(m.to);
-  return '<div class="msg">'+
-    '<div class="mhead"><span class="who">'+esc(m.from)+'</span><span class="arrow">→</span>'+
+  var preview=(m.body||'').replace(/\s+/g,' ').trim().slice(0,160);
+  return '<div class="msg'+(expanded?'':' collapsed')+'">'+
+    '<div class="mhead" onclick="toggleMsg(this)"><span class="chev">▾</span>'+
+      '<span class="who">'+esc(m.from)+'</span><span class="arrow">→</span>'+
       '<span class="tag '+di.cls+'">'+esc(di.label)+'</span>'+
       (m.subject?'<span class="muted">'+esc(m.subject)+'</span>':'')+
       '<span class="spacer" style="flex:1"></span>'+
       (m.status==='unread'?'<span class="tag dir">non‑lu</span>':'')+
       '<span class="faint mono">'+esc(m.id)+'</span><span class="faint">'+esc(fmtDate(m.createdAt))+'</span>'+
-    '</div><div class="mbody">'+esc(m.body)+'</div></div>';
+    '</div>'+
+    '<div class="mpreview" onclick="toggleMsg(this)">'+esc(preview)+(m.body&&m.body.length>160?' …':'')+'</div>'+
+    '<div class="mbody">'+esc(m.body)+'</div></div>';
 }
+function toggleMsg(el){var m=el.closest('.msg');if(m)m.classList.toggle('collapsed');}
+function expandAll(open){document.querySelectorAll('#msgs .msg').forEach(function(m){m.classList.toggle('collapsed',!open);});}
 function closeConv(){document.getElementById('conv').classList.remove('detailopen');CURRENT=null;CURRENTCONV=null;renderConvList();
   document.getElementById('convDetail').innerHTML='<div class="empty"><div class="big">💬</div><div>Sélectionne une conversation.</div></div>';}
 async function ackConv(ids){try{await api('POST','/ack',{ids:ids});toast('Marqué(s) lu(s).');await loadConversations();loadHealth();}catch(e){}}
