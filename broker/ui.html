@@ -286,8 +286,13 @@ async function loadThreads(){
     box.innerHTML=ts.map(function(t){
       var b=t.unread>0?'<span class="badge">'+t.unread+' non-lu</span>':'<span class="badge zero">lu</span>';
       var subj=t.subject?esc(t.subject):'<span class="muted">(sans sujet)</span>';
+      // Destination du fil : canal #…, diffusion (*), ou projet.
+      var dest='';
+      if(t.to==='*') dest=' <span class="tag">diffusion</span>';
+      else if(t.to && t.to.charAt(0)==='#') dest=' <span class="tag chan">'+esc(t.to)+'</span>';
+      else if(t.to) dest=' <span class="tag">→ '+esc(t.to)+'</span>';
       return '<div class="thread" data-id="'+esc(t.threadId)+'">'+
-        '<div class="head" onclick="toggleThread(this)">'+b+
+        '<div class="head" onclick="toggleThread(this)">'+b+dest+
         ' <b>'+subj+'</b> <span class="muted mono">'+esc(t.threadId)+'</span>'+
         ' <span class="grow"></span><span class="muted">'+esc((t.participants||[]).join(' ↔ '))+
         ' · '+t.count+' msg</span></div><div class="msgs muted">…</div></div>';

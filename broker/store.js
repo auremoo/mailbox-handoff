@@ -179,6 +179,8 @@ function listThreads() {
       count: r.count,
       unread: r.unread,
       subject: (root && root.subject) || (last && last.subject) || '',
+      // Destination du fil = "to" du message racine (canal #…, "*" diffusion, ou projet).
+      to: (root && root.to) || (last && last.to) || null,
       participants: [...new Set(db.prepare('SELECT DISTINCT sender FROM messages WHERE threadId = ?').all(r.threadId).map((x) => x.sender))],
       lastAt: r.lastAt,
       last: last,
