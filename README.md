@@ -244,16 +244,17 @@ le voient. C et D, abonnés à `billing`, ne reçoivent rien. Un projet peut s'a
 Le broker sert une **page web autonome** (zéro dépendance front, aucun asset externe) sur
 **`http://<ip-du-broker>:<port>/`** (aussi `/ui`). Elle ne remplace pas les scripts d'install
 (un navigateur ne peut ni déployer du code ni élever les privilèges), mais elle **outille**
-l'installation et l'exploitation. Cinq onglets :
+l'installation et l'exploitation. Navigation en **barre latérale**, regroupée pour bien
+**séparer la messagerie des configurations** :
 
-| Onglet           | À quoi ça sert                                                                 |
-|------------------|--------------------------------------------------------------------------------|
-| **Fils**         | Voir les fils de discussion (dépliables), lus/non-lus, participants.           |
-| **Registre**     | Projets/agents connus, leurs canaux, dernière activité.                        |
-| **Envoyer**      | Envoyer un message de test, ou répondre dans un fil (`/reply`).                |
-| **Config client**| **Générateur** : tu remplis projet/chemin/canaux → il produit la commande `setup-client.ps1` + les snippets `.mailbox.json`/`.mcp.json` à copier sur la machine cliente. |
-| **Serveur**      | **Installer/désinstaller le service Windows en 1 clic** (voir conditions ci-dessous). |
-| **Guide**        | **Tutoriels intégrés** pour tous les cas : install & màj serveur, install & màj client, service, canaux, fils, dépannage du hook. |
+| Groupe          | Vue                  | À quoi ça sert                                                                 |
+|-----------------|----------------------|--------------------------------------------------------------------------------|
+| **Messagerie**  | **Conversations**    | Boîte mail : liste des fils (avec canal/destination) à gauche, fil à droite, **réponse en ligne** et « marquer lu ». |
+|                 | **Nouveau message**  | Composer un message (projet, `*` ou `#canal`).                                 |
+| **Configuration**| **Brancher un client** | **Générateur** : projet/chemin/canaux → **télécharge un `.cmd`** (ou la commande + snippets `.mailbox.json`/`.mcp.json`). |
+|                 | **Serveur & service**| **Installer/désinstaller le service Windows** (voir conditions ci-dessous).    |
+|                 | **Projets & canaux** | Registre des agents connus, leurs canaux, dernière activité.                   |
+| **Aide**        | **Guide**            | Tutoriels intégrés : install & màj serveur, install & màj client, service, canaux, fils. |
 
 > 🖥️ **Installer le service depuis l'UI** (onglet Serveur) n'est possible que :
 > 1. depuis la **machine serveur elle-même** (`http://localhost:<port>/` — les actions
