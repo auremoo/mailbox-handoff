@@ -1,0 +1,21 @@
+# Données du broker (état des messages, runtime) — ne pas versionner
+/data/
+*.log
+
+# Config locale de rattachement d'un projet (propre à chaque machine,
+# peut contenir un jeton -> ne pas versionner)
+.mailbox.json
+.mcp.json
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS / éditeurs
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# Handoff legacy (généré par /handoff)
+CONTEXT.md

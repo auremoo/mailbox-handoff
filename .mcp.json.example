@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "mailbox": {
+      "command": "node",
+      "args": ["C:\\Users\\<toi>\\.claude\\mailbox-mcp.js"],
+      "env": {
+        "MAILBOX_PROJECT": "server",
+        "MAILBOX_BROKER": "http://192.168.1.10:7777",
+        "MAILBOX_TOKEN": "",
+        "MAILBOX_CHANNELS": "sujet-x,sujet-y"
+      }
+    }
+  }
+}

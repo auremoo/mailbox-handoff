@@ -1,0 +1,19 @@
+{
+  "name": "mailbox-handoff",
+  "version": "0.1.0",
+  "description": "Messagerie asynchrone inter-agents Claude Code : un broker réseau et des hooks pour aligner plusieurs projets liés (server / frontend / automate).",
+  "type": "commonjs",
+  "bin": {
+    "mailbox-broker": "broker/server.js",
+    "mailbox-mcp": "mcp/mailbox-mcp.js"
+  },
+  "scripts": {
+    "start": "node broker/server.js",
+    "health": "node -e \"fetch('http://localhost:'+(process.env.MAILBOX_PORT||7777)+'/health').then(r=>r.json()).then(d=>console.log(d)).catch(e=>{console.error(e.message);process.exit(1)})\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "private": true
+}
