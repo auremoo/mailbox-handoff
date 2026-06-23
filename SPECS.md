@@ -23,7 +23,9 @@ de bout en bout.
 
 | Composant         | Localisation                       | Rôle                                                |
 |-------------------|------------------------------------|-----------------------------------------------------|
-| **Broker**        | 1 machine du LAN                   | Stocke les messages (SQLite) et le registre, expose l'API + la page de monitoring |
+| **Broker**        | 1 machine du LAN                   | Stocke les messages (SQLite, `broker/store.js`) et le registre, expose l'API |
+| **Interface web** | servie par le broker sur `/`       | Monitoring, générateur de config client, guide, install du service (`broker/ui.html`) |
+| **Service Windows**| machine broker (optionnel)        | Broker en service auto-démarrage via NSSM (`broker/service.js`, routes `/admin/*`) |
 | **Hook réception**| `~/.claude/mailbox-check.ps1`      | Récupère et injecte les non-lus à chaque prise de main |
 | **Script envoi**  | `~/.claude/mailbox-send.ps1`       | Dépose un message (via `/msg`)                       |
 | **Commande**      | `~/.claude/commands/msg.md`        | Interface `/msg` pour l'agent                        |

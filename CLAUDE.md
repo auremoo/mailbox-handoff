@@ -14,17 +14,23 @@ commande `/msg` fait l'envoi.
 Ne pas confondre avec `/handoff` (relais Claude → autre LLM via `CONTEXT.md`) :
 c'est un système **différent et indépendant**.
 
-## Architecture (7 pièces)
+## Architecture (9 pièces)
 
-- `broker/server.js` — serveur HTTP Node.js (couche HTTP en API standard).
+- `broker/server.js` — serveur HTTP Node.js (couche HTTP en API standard) + service de la page web.
 - `broker/store.js` — couche de persistance **SQLite** (`better-sqlite3`) : isole tout
   l'accès au stockage (messages, fils, registre, migration depuis l'ancien JSON).
+- `broker/service.js` — install/désinstall du **service Windows** (NSSM), via les routes
+  `/admin/*` (localhost-only) pilotées par l'UI.
+- `broker/ui.html` — **interface web** autonome servie sur `/` (monitoring, config client, guide,
+  bouton service). HTML/CSS/JS inline, aucun asset externe.
 - `client/mailbox-check.ps1` — hook de réception (déployé en `~/.claude/`).
 - `client/mailbox-send.ps1` — envoi par script (déployé en `~/.claude/`).
 - `mcp/mailbox-mcp.js` — façade MCP, tools `mailbox_*` (JSON-RPC stdio, **sans dépendance**).
 - `commands/msg.md` — slash-command `/msg` (déployée en `~/.claude/commands/`).
-- `install.ps1` — déploie le client par machine, rattache un projet (`.mailbox.json`)
-  et branche le serveur MCP (`.mcp.json`).
+- `install.ps1` — déploie le client par machine (hook en **chemin absolu**, dédoublonné),
+  rattache un projet (`.mailbox.json`) et branche le serveur MCP (`.mcp.json`).
+  `vendor/nssm/nssm.exe` (embarqué) sert au service Windows ; `setup-server.ps1`/`setup-client.ps1`
+  sont les wrappers d'install conviviaux.
 
 Référence complète : [SPECS.md](SPECS.md). Vue d'ensemble : [README.md](README.md).
 

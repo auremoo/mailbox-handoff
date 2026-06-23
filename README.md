@@ -249,6 +249,38 @@ le voient. C et D, abonnés à `billing`, ne reçoivent rien. Un projet peut s'a
 
 ---
 
+## 🌐 Interface web (monitoring, config & service)
+
+Le broker sert une **page web autonome** (zéro dépendance front, aucun asset externe) sur
+**`http://<ip-du-broker>:<port>/`** (aussi `/ui`). Elle ne remplace pas les scripts d'install
+(un navigateur ne peut ni déployer du code ni élever les privilèges), mais elle **outille**
+l'installation et l'exploitation. Cinq onglets :
+
+| Onglet           | À quoi ça sert                                                                 |
+|------------------|--------------------------------------------------------------------------------|
+| **Fils**         | Voir les fils de discussion (dépliables), lus/non-lus, participants.           |
+| **Registre**     | Projets/agents connus, leurs canaux, dernière activité.                        |
+| **Envoyer**      | Envoyer un message de test, ou répondre dans un fil (`/reply`).                |
+| **Config client**| **Générateur** : tu remplis projet/chemin/canaux → il produit la commande `setup-client.ps1` + les snippets `.mailbox.json`/`.mcp.json` à copier sur la machine cliente. |
+| **Serveur**      | **Installer/désinstaller le service Windows en 1 clic** (voir conditions ci-dessous). |
+| **Guide**        | **Tutoriels intégrés** pour tous les cas : install & màj serveur, install & màj client, service, canaux, fils, dépannage du hook. |
+
+> 🖥️ **Installer le service depuis l'UI** (onglet Serveur) n'est possible que :
+> 1. depuis la **machine serveur elle-même** (`http://localhost:<port>/` — les actions
+>    d'admin sont refusées (403) depuis le LAN), et
+> 2. avec le broker lancé dans un **PowerShell Administrateur** (installer un service exige
+>    l'élévation). L'onglet affiche l'état (Windows / Admin / nssm / service) et te le dit.
+
+> 🔐 Si le broker tourne avec `MAILBOX_TOKEN`, la page demande le jeton et l'ajoute à ses appels.
+> Modèle de confiance LAN : la page est accessible à tout le réseau, comme l'API.
+
+> 💡 **Le passage à une nouvelle version du broker** reste une étape en ligne de commande sur la
+> machine serveur (`git pull` + `npm install` + relance / `-Service`). La migration de l'ancien
+> `store.json` vers SQLite est **automatique** au 1er démarrage. Une fois le nouveau broker lancé,
+> la nouvelle UI (avec ces onglets) est disponible.
+
+---
+
 ## 🗂 Structure du dépôt
 
 ```
@@ -256,7 +288,8 @@ mailbox-handoff/
 ├─ broker/
 │  ├─ server.js            # le broker (HTTP, Node.js)
 │  ├─ store.js             # persistance SQLite (better-sqlite3) + migration
-│  └─ ui.html              # page de monitoring servie sur / (HTML autonome)
+│  ├─ service.js           # install/désinstall du service Windows (NSSM) via /admin/*
+│  └─ ui.html              # interface web servie sur / (monitoring, config, guide)
 ├─ vendor/
 │  └─ nssm/nssm.exe        # wrapper de service Windows (embarqué dans le dépôt)
 ├─ client/
