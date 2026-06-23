@@ -277,6 +277,10 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  console.log('┌──────────────────────────────────────────────┐');
+  console.log('│  mailbox-handoff                             │');
+  console.log('│  Aurélien Moote - Moo - 2026  ·  Licence MIT │');
+  console.log('└──────────────────────────────────────────────┘');
   console.log(`[mailbox] broker à l'écoute sur http://${HOST}:${PORT}`);
   console.log(`[mailbox] monitoring : http://${HOST}:${PORT}/`);
   console.log(`[mailbox] stockage SQLite : ${DB_FILE}`);
