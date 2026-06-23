@@ -83,14 +83,27 @@ broker et affiche la **commande exacte à coller sur les clients**. Options util
 
 ### 2. Sur chaque machine CLIENTE — rattacher le projet
 
+> **Deux dossiers à ne pas confondre :**
+> - `mailbox-handoff` = la boîte à outils, d'où tu **lances** le script ;
+> - **ton vrai projet** (ton code frontend / automate / server) = ce que `-ProjectDir`
+>   doit pointer. C'est là que l'agent Claude Code travaille, et c'est là que le script
+>   dépose `.mailbox.json` + `.mcp.json`.
+>
+> Tu n'as **pas besoin** d'avoir Claude Code ouvert pendant l'installation : tu lances
+> le script dans un PowerShell normal, puis tu (r)ouvres Claude Code dans ton projet.
+
 ```powershell
-cd mailbox-handoff
-.\setup-client.ps1 -Project frontend -Broker http://192.168.1.10:7777 -ProjectDir C:\dev\mon-front
-# (ou sans arguments : mode interactif qui pose les questions)
+cd mailbox-handoff                       # le dossier des scripts
+# -ProjectDir = le chemin de TON projet (PAS mailbox-handoff) :
+.\setup-client.ps1 -Project frontend -Broker http://192.168.1.10:7777 -ProjectDir D:\dev\mon-frontend
 ```
 
+> 💡 Le plus simple : lance **`.\setup-client.ps1` sans aucun argument** — il pose les
+> questions une par une (nom du projet, URL du broker, chemin du projet, canaux).
+
 Le script vérifie que le broker répond, puis installe scripts, hooks, commande `/msg`,
-serveur MCP et `.mailbox.json`. **Recharge ensuite la session Claude Code du projet.**
+serveur MCP et écrit `.mailbox.json` + `.mcp.json` dans ton projet.
+**Ouvre ou recharge ensuite la session Claude Code de ce projet** pour activer hooks et tools MCP.
 
 > ### 💡 Un agent Claude tourne AUSSI sur la machine serveur ?
 > Broker et client sont **indépendants** : le broker ne rend pas son hôte participant.

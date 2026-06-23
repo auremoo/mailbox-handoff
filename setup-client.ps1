@@ -31,9 +31,9 @@ Write-Host "=== Installation d'un client mailbox ===" -ForegroundColor Cyan
 if (-not $Project)    { $Project    = Read-Host "Nom logique de ce projet (ex: server, frontend, automate)" }
 if (-not $Broker)     { $Broker     = Read-Host "URL du broker (ex: http://192.168.1.10:7777)" }
 if (-not $ProjectDir) {
-    $def = (Get-Location).Path
-    $ans = Read-Host "Chemin du projet à rattacher [$def]"
-    $ProjectDir = if ($ans) { $ans } else { $def }
+    Write-Host "Chemin du dossier de TON projet (celui que tu ouvres dans Claude Code)." -ForegroundColor Cyan
+    Write-Host "  -> PAS le dossier mailbox-handoff. Ex: D:\dev\mon-frontend" -ForegroundColor DarkGray
+    do { $ProjectDir = Read-Host "Chemin du projet à rattacher" } while (-not $ProjectDir)
 }
 if ($Channels.Count -eq 0) {
     $ansC = Read-Host "Canaux/sujets à suivre, séparés par des virgules (optionnel, ex: sujet-x,sujet-y)"
