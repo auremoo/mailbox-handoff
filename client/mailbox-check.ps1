@@ -10,6 +10,11 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Sortie en UTF-8 : le contexte injecté contient accents et emojis. En PowerShell
+# 5.1 la sortie console n'est pas UTF-8 par défaut -> Claude Code lirait des
+# caractères cassés. On force l'encodage de sortie (sans incidence ailleurs).
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
 # --- Entrée du hook (stdin JSON fourni par Claude Code) -----------------------
 $eventName = 'UserPromptSubmit'
 try {
@@ -69,11 +74,15 @@ foreach ($m in $resp.messages) {
     $dest = if ($m.to -eq '*') { " (diffusion)" }
             elseif ($m.to -like '#*') { " (canal $($m.to))" }
             else { "" }
-    $lines += "─── de [$($m.from)]$dest le $($m.createdAt)$subj"
+    # Indique le fil : id du message (pour répondre) + fil s'il s'agit d'une réponse.
+    $thread = if ($m.threadId -and $m.threadId -ne $m.id) { " [fil $($m.threadId)]" } else { "" }
+    $lines += "─── [$($m.id)] de [$($m.from)]$dest le $($m.createdAt)$subj$thread"
     $lines += $m.body
     $lines += ""
 }
-$lines += "Prends ces messages en compte pour t'aligner avec les autres projets. Réponds à un expéditeur avec : /msg <projet> <texte>."
+$lines += "Prends ces messages en compte pour t'aligner avec les autres projets."
+$lines += "Pour répondre DANS LE FIL : tool MCP mailbox_reply (replyTo=<id du message>) — ou /msg --reply <id> <texte>."
+$lines += "Pour un nouveau message : /msg <projet|*|#canal> <texte>."
 $context = ($lines -join "`n")
 
 # --- Acquittement (marque lu) -------------------------------------------------

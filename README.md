@@ -76,10 +76,24 @@ Le script détecte l'**IP LAN**, ouvre le **port 7777** dans le pare-feu, démar
 broker et affiche la **commande exacte à coller sur les clients**. Options utiles :
 
 ```powershell
-.\setup-server.ps1 -Persist          # démarre le broker automatiquement à chaque ouverture de session
+.\setup-server.ps1 -Service          # installe un VRAI service Windows (auto-démarrage, sans session)
+.\setup-server.ps1 -RemoveService    # désinstalle le service
+.\setup-server.ps1 -Persist          # repli : tâche planifiée à l'ouverture de session
 .\setup-server.ps1 -Token monjeton   # exige un jeton partagé (clients : -Token monjeton)
 .\setup-server.ps1 -Port 8080        # autre port
 ```
+
+> 🖥️ **Service Windows.** `-Service` enregistre le broker comme **vrai service** (via NSSM,
+> **embarqué** dans `vendor/nssm/nssm.exe` — rien à télécharger) : il démarre **sans session
+> ouverte** et redémarre tout seul en cas de crash. Nécessite un PowerShell **Administrateur**.
+> Les logs vont dans `data/broker.out.log` / `.err.log`. Pour désinstaller : `-RemoveService`.
+
+> 📊 **Monitoring web + installation du service en 1 clic.** Le broker sert une page de
+> supervision sur **`http://<ip>:<port>/`** : état, registre des projets/canaux, fils de
+> discussion (dépliables), envoi/réponse de test, **générateur de config client**, et un onglet
+> **Serveur** qui **installe/désinstalle le service Windows directement depuis l'UI**. L'onglet
+> Serveur n'est actif que depuis la machine serveur (`http://localhost:<port>/`) et avec le broker
+> lancé en **PowerShell Admin** (l'installation d'un service exige l'élévation).
 
 ### 2. Sur chaque machine CLIENTE — rattacher le projet
 
@@ -121,8 +135,14 @@ serveur MCP et écrit `.mailbox.json` + `.mcp.json` dans ton projet.
 
 ```powershell
 cd mailbox-handoff
-npm start   # -> [mailbox] broker à l'écoute sur http://0.0.0.0:7777
+npm install   # une fois : installe better-sqlite3 (persistance SQLite du broker)
+npm start     # -> [mailbox] broker à l'écoute sur http://0.0.0.0:7777
 ```
+
+> Le broker persiste désormais dans une base **SQLite** (`data/store.db`). Un ancien
+> `data/store.json` est **migré automatiquement** au premier démarrage (puis renommé
+> `.migrated`). `npm install` n'est requis que sur la **machine broker** ; les clients
+> PowerShell et la façade MCP n'ont aucune dépendance.
 
 Note l'**IP de cette machine** (`ipconfig`) et ouvre le port `7777` au pare-feu.
 Options (variables d'environnement) :
@@ -131,7 +151,7 @@ Options (variables d'environnement) :
 |-----------------|-----------------------|-------------------------------------------------|
 | `MAILBOX_PORT`  | `7777`                | Port d'écoute                                    |
 | `MAILBOX_HOST`  | `0.0.0.0`             | Interface (laisser `0.0.0.0` pour le LAN)        |
-| `MAILBOX_DATA`  | `./data/store.json`   | Fichier d'état persistant                        |
+| `MAILBOX_DATA`  | `./data/store.db`     | Base SQLite persistante (un `.json` hérité est migré) |
 | `MAILBOX_TOKEN` | *(vide)*              | Jeton partagé : si défini, exigé par les clients |
 
 ### Rattacher un projet à la main
@@ -180,6 +200,19 @@ Le contrat de /orders a changé : "status" devient un enum (NEW|PAID|SHIPPED).
 
 Diffusion à tous les projets : `/msg * Le format de date passe en ISO 8601 partout.`
 
+### 🧵 Répondre dans un fil (question/réponse)
+
+Chaque message porte un `id` (affiché en tête, ex. `[msg_00042]`) et un `threadId`. Pour
+**répondre dans le fil** d'un message reçu — sans avoir à retaper le destinataire :
+
+```
+/msg --reply msg_00042 Oui, je m'aligne, je passe status en enum côté frontend.
+```
+
+ou, si la façade MCP est branchée, l'agent appelle simplement le tool `mailbox_reply`
+(`replyTo: "msg_00042"`). La réponse repart vers l'expéditeur d'origine, garde le même
+`threadId` et hérite du sujet (`Re: …`). `mailbox_thread` permet de relire tout le fil.
+
 ## 📡 Canaux / sujets nommés
 
 En plus de l'adressage direct (`to: projet`) et de la diffusion (`*`), un message
@@ -221,7 +254,11 @@ le voient. C et D, abonnés à `billing`, ne reçoivent rien. Un projet peut s'a
 ```
 mailbox-handoff/
 ├─ broker/
-│  └─ server.js            # le broker (Node.js, sans dépendance)
+│  ├─ server.js            # le broker (HTTP, Node.js)
+│  ├─ store.js             # persistance SQLite (better-sqlite3) + migration
+│  └─ ui.html              # page de monitoring servie sur / (HTML autonome)
+├─ vendor/
+│  └─ nssm/nssm.exe        # wrapper de service Windows (embarqué dans le dépôt)
 ├─ client/
 │  ├─ mailbox-check.ps1    # hook de réception (déployé vers ~/.claude/)
 │  └─ mailbox-send.ps1     # envoi par script (déployé vers ~/.claude/)
@@ -248,8 +285,10 @@ quatre *tools* (transport stdio, identité passée via les variables d'env du `.
 
 | Tool                | Rôle                                                              |
 |---------------------|-------------------------------------------------------------------|
-| `mailbox_send`      | Envoie un message à `<projet>` ou `*` (diffusion).                |
+| `mailbox_send`      | Envoie un message à `<projet>`, `*` (diffusion) ou `#canal`.       |
 | `mailbox_inbox`     | Lit la boîte (non-lus par défaut ; `markRead:true` pour acquitter).|
+| `mailbox_reply`     | Répond **dans le fil** d'un message reçu (destinataire déduit).    |
+| `mailbox_thread`    | Récupère tout un fil de discussion (par `threadId`).              |
 | `mailbox_ack`       | Marque lus des messages par leurs ids.                            |
 | `mailbox_registry`  | Liste les projets/agents connus.                                  |
 
@@ -299,6 +338,6 @@ Invoke-RestMethod -Uri "http://192.168.1.10:7777/inbox/frontend?status=unread"
 
 ## 🧱 Évolutions possibles
 
-- Mode question/réponse avec fils de discussion (threads).
-- Persistance SQLite à la place du JSON pour gros volumes.
-- Serveur MCP en façade du broker (l'agent appelle des *tools* au lieu d'un script).
+- Push temps réel (SSE/WebSocket) en complément du pull par hook.
+- Purge/archivage automatique des vieux fils.
+- Authentification par utilisateur (au-delà du jeton partagé LAN).

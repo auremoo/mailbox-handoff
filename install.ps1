@@ -56,7 +56,11 @@ if (-not $settings.PSObject.Properties['hooks']) {
     $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([PSCustomObject]@{})
 }
 
-$hookCommand = 'powershell -NoProfile -File "%USERPROFILE%\.claude\mailbox-check.ps1"'
+# Chemin ABSOLU (pas %USERPROFILE%) : le lanceur de hooks de Claude Code n'expanse
+# pas toujours les variables d'environnement style cmd -> %USERPROFILE% resterait
+# littéral et le hook échouerait silencieusement. On résout le chemin à l'install.
+$hookScript = Join-Path $claudeDir 'mailbox-check.ps1'
+$hookCommand = "powershell -NoProfile -File `"$hookScript`""
 
 function Add-MailboxHook {
     param($Hooks, [string]$EventName, [string]$Command)
@@ -65,19 +69,21 @@ function Add-MailboxHook {
     if ($Hooks.PSObject.Properties[$EventName]) {
         $existing = @($Hooks.$EventName)
     }
-    # Évite le doublon si déjà présent.
+    # Purge toute entrée mailbox-check.ps1 préexistante (y compris l'ancienne forme
+    # %USERPROFILE%) pour éviter les doublons lors d'une mise à jour, puis ré-ajoute
+    # la forme canonique (chemin absolu).
+    $kept = @()
     foreach ($entry in $existing) {
+        $isMailbox = $false
         foreach ($h in @($entry.hooks)) {
-            if ($h.command -eq $Command) {
-                Write-Host "   • Hook $EventName déjà présent, ignoré."
-                return $Hooks
-            }
+            if ($h.command -and $h.command -like '*mailbox-check.ps1*') { $isMailbox = $true }
         }
+        if (-not $isMailbox) { $kept += $entry }
     }
     $newEntry = [PSCustomObject]@{
         hooks = @([PSCustomObject]@{ type = 'command'; command = $Command })
     }
-    $updated = @($existing) + $newEntry
+    $updated = @($kept) + $newEntry
     if ($Hooks.PSObject.Properties[$EventName]) {
         $Hooks.$EventName = $updated
     } else {

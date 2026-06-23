@@ -2,12 +2,14 @@
 /**
  * mailbox-broker — service central de messagerie inter-agents Claude Code.
  *
- * Zéro dépendance externe : http natif + stockage JSON sur disque.
+ * Stockage SQLite (better-sqlite3) — voir broker/store.js. Le reste du broker
+ * (HTTP) reste sur l'API Node standard.
  * Lancer :  node broker/server.js   (ou via npm start)
  * Config par variables d'environnement :
  *   MAILBOX_PORT   port d'écoute            (défaut 7777)
  *   MAILBOX_HOST   interface d'écoute       (défaut 0.0.0.0 — accessible sur le LAN)
- *   MAILBOX_DATA   chemin du fichier d'état (défaut ./data/store.json)
+ *   MAILBOX_DATA   chemin de la base SQLite (défaut ./data/store.db ; un ancien
+ *                  store.json voisin est migré automatiquement au 1er démarrage)
  *   MAILBOX_TOKEN  jeton partagé optionnel  (si défini, exigé en en-tête X-Mailbox-Token)
  */
 'use strict';
@@ -15,50 +17,15 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const store = require('./store');
+const service = require('./service');
 
 const PORT = parseInt(process.env.MAILBOX_PORT || '7777', 10);
 const HOST = process.env.MAILBOX_HOST || '0.0.0.0';
-const DATA_FILE = process.env.MAILBOX_DATA || path.join(__dirname, '..', 'data', 'store.json');
+const DATA_FILE = process.env.MAILBOX_DATA || path.join(__dirname, '..', 'data', 'store.db');
 const TOKEN = process.env.MAILBOX_TOKEN || null;
-
-// ---------------------------------------------------------------------------
-// Stockage : un objet en mémoire, persisté en JSON à chaque mutation.
-// Volume attendu faible (quelques agents), une écriture synchrone suffit.
-// ---------------------------------------------------------------------------
-let store = { seq: 0, messages: [], registry: {} };
-
-function loadStore() {
-  try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    store = JSON.parse(raw);
-    if (!store.messages) store.messages = [];
-    if (!store.registry) store.registry = {};
-    if (typeof store.seq !== 'number') store.seq = store.messages.length;
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.error('[mailbox] lecture du store échouée, repart à vide :', err.message);
-    }
-    store = { seq: 0, messages: [], registry: {} };
-  }
-}
-
-let writePending = false;
-function saveStore() {
-  // Coalesce les écritures rapprochées en une seule passe disque.
-  if (writePending) return;
-  writePending = true;
-  setImmediate(() => {
-    writePending = false;
-    try {
-      fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-      const tmp = DATA_FILE + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(store, null, 2));
-      fs.renameSync(tmp, DATA_FILE); // remplacement atomique
-    } catch (err) {
-      console.error('[mailbox] écriture du store échouée :', err.message);
-    }
-  });
-}
+// Page de monitoring servie à la racine (HTML autonome, voir broker/ui.html).
+const UI_FILE = path.join(__dirname, 'ui.html');
 
 // ---------------------------------------------------------------------------
 // Helpers HTTP
@@ -70,6 +37,23 @@ function send(res, status, payload) {
     'Content-Length': Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+// Requête issue de la machine serveur elle-même ? (garde des actions d'admin)
+function isLocalhost(req) {
+  const a = req.socket && req.socket.remoteAddress;
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+}
+
+// Sert un fichier statique (la page de monitoring). 404 propre si absent.
+function sendFile(res, file, contentType) {
+  fs.readFile(file, (err, data) => {
+    if (err) {
+      return send(res, 404, { error: 'page de monitoring introuvable (broker/ui.html)' });
+    }
+    res.writeHead(200, { 'Content-Type': contentType, 'Content-Length': data.length });
+    res.end(data);
+  });
 }
 
 function readBody(req) {
@@ -95,17 +79,30 @@ function readBody(req) {
   });
 }
 
-function nextId() {
-  store.seq += 1;
-  const n = String(store.seq).padStart(5, '0');
-  return `msg_${n}`;
-}
-
-function touchRegistry(project, meta) {
-  if (!project) return;
-  const now = new Date().toISOString();
-  const cur = store.registry[project] || { project, firstSeen: now };
-  store.registry[project] = { ...cur, ...meta, project, lastSeen: now };
+// Crée et persiste un message en résolvant son fil de discussion.
+// Règle threadId : si replyTo -> hérite du fil du parent ; sinon si threadId
+// fourni -> utilisé ; sinon le message est racine (threadId == son propre id).
+// `parent` (optionnel) évite de re-chercher le message parent côté appelant.
+function createMessage({ from, to, subject, body, replyTo, threadId, parent }) {
+  const id = store.nextId();
+  let thread = threadId || null;
+  if (parent) thread = parent.threadId;
+  if (!thread) thread = id;
+  const msg = {
+    id,
+    from: String(from),
+    to: String(to), // nom de projet, "*" (diffusion) ou "#canal"
+    subject: subject ? String(subject) : '',
+    body: String(body),
+    createdAt: new Date().toISOString(),
+    status: 'unread',
+    readAt: null,
+    threadId: thread,
+    replyTo: replyTo || null,
+  };
+  store.addMessage(msg);
+  store.upsertRegistry(msg.from, {});
+  return msg;
 }
 
 // Normalise un nom de canal : préfixe "#" garanti, vide ignoré.
@@ -133,7 +130,13 @@ async function route(req, res, url) {
 
   // GET /health — sonde de vie, pas de token requis.
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, service: 'mailbox-broker', messages: store.messages.length });
+    return send(res, 200, { ok: true, service: 'mailbox-broker', messages: store.countMessages() });
+  }
+
+  // GET / et /ui — page de monitoring (HTML autonome). Pas de token : la page
+  // demande elle-même le jeton et l'ajoute en en-tête sur ses appels d'API.
+  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/ui')) {
+    return sendFile(res, UI_FILE, 'text/html; charset=utf-8');
   }
 
   // Auth optionnelle pour tout le reste.
@@ -147,36 +150,82 @@ async function route(req, res, url) {
     if (!b.project) return send(res, 400, { error: 'champ "project" requis' });
     const meta = { host: b.host || null, role: b.role || null };
     if (b.channels !== undefined) meta.channels = parseChannels(b.channels);
-    touchRegistry(b.project, meta);
-    saveStore();
-    return send(res, 200, { ok: true, registry: store.registry[b.project] });
+    const entry = store.upsertRegistry(b.project, meta);
+    return send(res, 200, { ok: true, registry: entry });
   }
 
   // GET /registry — liste des projets connus.
   if (req.method === 'GET' && url.pathname === '/registry') {
-    return send(res, 200, { projects: Object.values(store.registry) });
+    return send(res, 200, { projects: store.getRegistry() });
   }
 
-  // POST /messages  { from, to, subject?, body }
+  // GET /threads — liste des fils (monitoring UI).
+  if (req.method === 'GET' && url.pathname === '/threads') {
+    return send(res, 200, { threads: store.listThreads() });
+  }
+
+  // Endpoints d'administration (gestion du service Windows) : réservés à la
+  // machine serveur (localhost), car ils exécutent nssm avec les droits du process.
+  if (seg[0] === 'admin') {
+    if (!isLocalhost(req)) {
+      return send(res, 403, { error: "actions d'administration réservées à la machine serveur (localhost)" });
+    }
+    if (req.method === 'GET' && url.pathname === '/admin/status') {
+      return send(res, 200, { service: service.status(), broker: { port: PORT, dataFile: DB_FILE } });
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/service/install') {
+      try { return send(res, 200, service.install({ port: PORT, token: TOKEN, dataFile: DB_FILE })); }
+      catch (e) { return send(res, 400, { error: e.message }); }
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/service/remove') {
+      try { return send(res, 200, service.remove()); }
+      catch (e) { return send(res, 400, { error: e.message }); }
+    }
+    return send(res, 404, { error: 'route admin inconnue' });
+  }
+
+  // POST /messages  { from, to, subject?, body, replyTo?, threadId? }
   if (req.method === 'POST' && url.pathname === '/messages') {
     const b = await readBody(req);
     if (!b.from || !b.to || !b.body) {
       return send(res, 400, { error: 'champs "from", "to" et "body" requis' });
     }
-    const msg = {
-      id: nextId(),
-      from: String(b.from),
-      to: String(b.to), // nom de projet, ou "*" pour diffusion
-      subject: b.subject ? String(b.subject) : '',
-      body: String(b.body),
-      createdAt: new Date().toISOString(),
-      status: 'unread',
-      readAt: null,
-    };
-    store.messages.push(msg);
-    touchRegistry(b.from, {});
-    saveStore();
-    return send(res, 201, { ok: true, id: msg.id });
+    // replyTo facultatif : on rattache au fil du parent si on le retrouve.
+    let parent = null;
+    if (b.replyTo) {
+      parent = store.findMessage(b.replyTo);
+      if (!parent) return send(res, 404, { error: 'message parent (replyTo) introuvable' });
+    }
+    const msg = createMessage({
+      from: b.from, to: b.to, subject: b.subject, body: b.body,
+      replyTo: b.replyTo || null, threadId: b.threadId || null, parent,
+    });
+    return send(res, 201, { ok: true, id: msg.id, threadId: msg.threadId });
+  }
+
+  // POST /reply  { from, replyTo, body, subject? }
+  // Répond dans le fil : destinataire = expéditeur du parent, fil hérité.
+  if (req.method === 'POST' && url.pathname === '/reply') {
+    const b = await readBody(req);
+    if (!b.from || !b.replyTo || !b.body) {
+      return send(res, 400, { error: 'champs "from", "replyTo" et "body" requis' });
+    }
+    const parent = store.findMessage(b.replyTo);
+    if (!parent) return send(res, 404, { error: 'message parent (replyTo) introuvable' });
+    const subject = b.subject
+      ? String(b.subject)
+      : (parent.subject ? (parent.subject.startsWith('Re:') ? parent.subject : 'Re: ' + parent.subject) : '');
+    const msg = createMessage({
+      from: b.from, to: parent.from, subject, body: b.body, replyTo: parent.id, parent,
+    });
+    return send(res, 201, { ok: true, id: msg.id, threadId: msg.threadId, to: msg.to });
+  }
+
+  // GET /thread/:threadId — tout le fil, trié par date croissante.
+  if (req.method === 'GET' && seg[0] === 'thread' && seg[1]) {
+    const threadId = decodeURIComponent(seg[1]);
+    const items = store.getThread(threadId);
+    return send(res, 200, { threadId, count: items.length, messages: items });
   }
 
   // GET /inbox/:project?status=unread&channels=sujet-x,sujet-y
@@ -185,29 +234,19 @@ async function route(req, res, url) {
     const statusFilter = url.searchParams.get('status'); // unread | read | (tous)
     // Canaux auxquels ce projet est abonné : transmis par le client (sans état
     // de membership côté broker -> filtrage fiable quel que soit l'ordre).
-    const channelSet = new Set(parseChannels(url.searchParams.get('channels')));
+    const channels = parseChannels(url.searchParams.get('channels'));
     const meta = {};
-    if (url.searchParams.has('channels')) meta.channels = [...channelSet];
-    touchRegistry(project, meta);
-    const items = store.messages.filter((m) => {
-      const isChannel = typeof m.to === 'string' && m.to.startsWith('#');
-      const addressed = m.to === project || m.to === '*' || (isChannel && channelSet.has(m.to));
-      if (!addressed) return false;
-      if (statusFilter && m.status !== statusFilter) return false;
-      return true;
-    });
-    saveStore(); // persiste le lastSeen / channels
+    if (url.searchParams.has('channels')) meta.channels = channels;
+    store.upsertRegistry(project, meta); // persiste le lastSeen / channels
+    const items = store.getInbox(project, channels, statusFilter || null);
     return send(res, 200, { project, count: items.length, messages: items });
   }
 
   // POST /messages/:id/ack — marque lu
   if (req.method === 'POST' && seg[0] === 'messages' && seg[1] && seg[2] === 'ack') {
     const id = decodeURIComponent(seg[1]);
-    const msg = store.messages.find((m) => m.id === id);
-    if (!msg) return send(res, 404, { error: 'message introuvable' });
-    msg.status = 'read';
-    msg.readAt = new Date().toISOString();
-    saveStore();
+    if (!store.findMessage(id)) return send(res, 404, { error: 'message introuvable' });
+    store.ackIds([id]);
     return send(res, 200, { ok: true, id });
   }
 
@@ -215,16 +254,7 @@ async function route(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/ack') {
     const b = await readBody(req);
     const ids = Array.isArray(b.ids) ? b.ids : [];
-    let n = 0;
-    for (const id of ids) {
-      const msg = store.messages.find((m) => m.id === id);
-      if (msg && msg.status !== 'read') {
-        msg.status = 'read';
-        msg.readAt = new Date().toISOString();
-        n += 1;
-      }
-    }
-    saveStore();
+    const n = store.ackIds(ids);
     return send(res, 200, { ok: true, acked: n });
   }
 
@@ -234,7 +264,7 @@ async function route(req, res, url) {
 // ---------------------------------------------------------------------------
 // Serveur
 // ---------------------------------------------------------------------------
-loadStore();
+const DB_FILE = store.init(DATA_FILE);
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -245,7 +275,8 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[mailbox] broker à l'écoute sur http://${HOST}:${PORT}`);
-  console.log(`[mailbox] stockage : ${DATA_FILE}`);
+  console.log(`[mailbox] monitoring : http://${HOST}:${PORT}/`);
+  console.log(`[mailbox] stockage SQLite : ${DB_FILE}`);
   console.log(`[mailbox] auth jeton : ${TOKEN ? 'activée' : 'désactivée'}`);
 });
 

@@ -10,8 +10,12 @@ Permettre à N agents Claude Code, exécutés sur des **machines distinctes** d'
 réseau, ouverts sur des **projets liés**, d'échanger des messages **asynchrones et
 fire-and-forget** pour s'aligner.
 
-**Hors périmètre (v0.1)** : temps réel / push instantané, question-réponse synchrone,
-fils de discussion, authentification par utilisateur, chiffrement de bout en bout.
+Les messages peuvent former des **fils de discussion** (threads) : une réponse reste
+rattachée au message d'origine, ce qui couvre le mode **question/réponse asynchrone**.
+
+**Hors périmètre** : temps réel / push instantané, question-réponse *synchrone* (l'agent
+ne répond qu'à sa prochaine prise de main), authentification par utilisateur, chiffrement
+de bout en bout.
 
 ---
 
@@ -19,7 +23,7 @@ fils de discussion, authentification par utilisateur, chiffrement de bout en bou
 
 | Composant         | Localisation                       | Rôle                                                |
 |-------------------|------------------------------------|-----------------------------------------------------|
-| **Broker**        | 1 machine du LAN                   | Stocke les messages et le registre, expose l'API    |
+| **Broker**        | 1 machine du LAN                   | Stocke les messages (SQLite) et le registre, expose l'API + la page de monitoring |
 | **Hook réception**| `~/.claude/mailbox-check.ps1`      | Récupère et injecte les non-lus à chaque prise de main |
 | **Script envoi**  | `~/.claude/mailbox-send.ps1`       | Dépose un message (via `/msg`)                       |
 | **Commande**      | `~/.claude/commands/msg.md`        | Interface `/msg` pour l'agent                        |
@@ -45,9 +49,14 @@ Ce nom est l'adresse de la boîte aux lettres.
   "body": "…",                // contenu (texte libre)
   "createdAt": "2026-06-23T10:40:00.000Z", // ISO 8601 UTC
   "status": "unread",         // "unread" | "read"
-  "readAt": null              // ISO 8601 quand acquitté, sinon null
+  "readAt": null,             // ISO 8601 quand acquitté, sinon null
+  "threadId": "msg_00042",    // id du message racine du fil (== id si racine)
+  "replyTo": null             // id du message parent (réponse dans le fil), sinon null
 }
 ```
+
+> **Rétro-compat** : un message d'avant les fils (sans `threadId`) est traité comme sa
+> propre racine — au chargement, `threadId` est initialisé à son propre `id` et `replyTo` à `null`.
 
 ### 3.2 Entrée de registre
 
@@ -62,18 +71,21 @@ Ce nom est l'adresse de la boîte aux lettres.
 }
 ```
 
-### 3.3 État persistant (`data/store.json`)
+### 3.3 État persistant (`data/store.db` — SQLite)
 
-```jsonc
-{
-  "seq": 42,                  // compteur d'ids
-  "messages": [ /* Message[] */ ],
-  "registry": { "frontend": { /* entrée */ }, /* … */ }
-}
-```
+Stockage **SQLite** via `better-sqlite3` (mode WAL), encapsulé dans `broker/store.js`.
+Trois tables :
+- `messages(id, sender, recipient, subject, body, createdAt, status, readAt, threadId, replyTo)`
+  — `sender`/`recipient` portent `from`/`to` (mots réservés SQL), remappés dans le JSON de
+  l'API. Index sur `recipient`, `threadId`, `status`.
+- `registry(project, host, role, channels /*JSON*/, firstSeen, lastSeen)`.
+- `meta(key, value)` — porte le compteur `seq` des ids.
 
-Écriture **atomique** : sérialisation dans `store.json.tmp` puis `rename`.
-Les écritures rapprochées sont coalescées (`setImmediate`).
+**Durabilité** : transactions SQLite/WAL (remplace l'ancien remplacement atomique JSON).
+
+**Migration** : au 1er démarrage, si la base est vide et qu'un ancien `store.json` est présent
+(chemin `MAILBOX_DATA` en `.json`, ou `store.json` voisin du `.db`), il est importé une fois
+(messages + registre + `seq`, avec rétro-compat threads) puis renommé `store.json.migrated`.
 
 ### 3.4 Config projet (`.mailbox.json`)
 
@@ -98,9 +110,22 @@ exigent l'en-tête `X-Mailbox-Token: <jeton>` (sinon `401`).
 → `200 { "ok": true, "service": "mailbox-broker", "messages": <n> }`
 
 ### `POST /messages`
-Corps : `{ "from", "to", "body", "subject?" }`. `to` = nom de projet, `"*"`, ou `"#canal"`.
-- `201 { "ok": true, "id": "msg_00042" }`
-- `400` si `from`/`to`/`body` manquant.
+Corps : `{ "from", "to", "body", "subject?", "replyTo?", "threadId?" }`. `to` = nom de projet,
+`"*"`, ou `"#canal"`. Résolution du fil : si `replyTo` → hérite du `threadId` du parent ; sinon
+si `threadId` fourni → utilisé ; sinon le message est racine (`threadId == id`).
+- `201 { "ok": true, "id": "msg_00042", "threadId": "msg_00042" }`
+- `400` si `from`/`to`/`body` manquant ; `404` si `replyTo` désigne un message inconnu.
+
+### `POST /reply`
+Corps : `{ "from", "replyTo", "body", "subject?" }` — répond **dans le fil** du message `replyTo`.
+Le broker fixe `to` = expéditeur du parent, `threadId` = celui du parent, et `subject` hérite
+(`"Re: …"`) s'il n'est pas fourni.
+- `201 { "ok": true, "id", "threadId", "to" }`
+- `400` si champ requis manquant ; `404` si `replyTo` inconnu.
+
+### `GET /thread/:threadId`
+Retourne tous les messages du fil (lus + non-lus, tous participants), triés par `createdAt` croissant.
+→ `200 { "threadId", "count", "messages": Message[] }`
 
 ### `GET /inbox/:project`
 Query : `status=unread` | `status=read` | *(absent = tous)* ; et
@@ -130,6 +155,23 @@ registre (les `channels` sont normalisés avec préfixe `#`).
 
 ### `GET /registry`
 → `200 { "projects": Entrée[] }`
+
+### `GET /threads`
+Liste les fils pour le monitoring : un objet par `threadId` avec `count`, `unread`, `subject`,
+`participants`, `lastAt` et le dernier message (`last`). Trié du fil le plus récemment actif au plus ancien.
+→ `200 { "threads": [ … ] }`
+
+### `GET /` et `GET /ui`
+Servent la page de monitoring (`broker/ui.html`, HTML autonome). Pas de jeton requis pour la page
+elle-même ; ses appels d'API portent le jeton si l'utilisateur le saisit.
+
+### `GET /admin/status`, `POST /admin/service/install`, `POST /admin/service/remove`
+Gestion du **service Windows** (via `broker/service.js` + `vendor/nssm/nssm.exe`), pilotée par
+l'onglet « Serveur » de l'UI. **Réservées à `localhost`** (403 sinon) car elles exécutent `nssm`
+avec les droits du process. `status` renvoie `{ isWindows, admin, nssm, serviceName, state }`.
+`install` exige que le broker tourne **élevé** (Admin) ; il enregistre le service en démarrage
+automatique **sans le démarrer** (le port est occupé par le broker courant) → bascule au prochain
+boot ou via `net start MailboxBroker` après arrêt du broker manuel.
 
 ### Erreurs
 - `400` corps JSON invalide ou champ requis manquant ou corps > 1 Mo.
@@ -200,8 +242,8 @@ n'échoue jamais bloquant la session : broker injoignable → simple note de con
 
 | Décision                         | Raison                                                        |
 |----------------------------------|---------------------------------------------------------------|
-| Broker Node.js sans dépendance   | Démarrage immédiat, pas de `npm install`, déjà dans l'écosystème |
-| Stockage JSON fichier            | Volume faible (quelques agents) ; SQLite = évolution future   |
+| Broker Node.js minimaliste       | Une seule dépendance (`better-sqlite3`) ; sinon API standard   |
+| Stockage SQLite (`better-sqlite3`) | Gros volumes de messages, requêtes indexées, transactions/WAL ; migration auto depuis l'ancien JSON |
 | Hooks PowerShell                  | Machines Windows (dont l'automate/TIA Portal)                 |
 | Réception par hook (pull auto)   | Un agent ne peut pas écouter en continu → pull à la prise de main |
 | Fire-and-forget                  | Couvre 90 % des cas d'alignement ; threads = évolution future |
@@ -227,8 +269,10 @@ par ligne (`\n`), **sans dépendance** (modules `http`/`https` natifs, pas de fe
 
 | Tool               | Arguments                                  | Effet broker                  |
 |--------------------|--------------------------------------------|-------------------------------|
-| `mailbox_send`     | `to` (req), `body` (req), `subject?`        | `POST /messages`              |
+| `mailbox_send`     | `to` (req), `body` (req), `subject?`, `replyTo?` | `POST /messages`         |
 | `mailbox_inbox`    | `status?` (`unread`\|`read`\|`all`), `markRead?` | `GET /inbox/:me` (+ `POST /ack` si `markRead`) |
+| `mailbox_reply`    | `replyTo` (req), `body` (req), `subject?`   | `POST /reply`                 |
+| `mailbox_thread`   | `threadId` (req)                            | `GET /thread/:id`             |
 | `mailbox_ack`      | `ids` (req, array)                          | `POST /ack`                   |
 | `mailbox_registry` | —                                          | `GET /registry`               |
 
@@ -274,3 +318,8 @@ par ligne (`\n`), **sans dépendance** (modules `http`/`https` natifs, pas de fe
    message ; `mailbox_inbox markRead:true` le retire des non-lus au prochain appel.
 10. **MCP résilience** : appels séquentiels sans timeout ; un retry absorbe une
     erreur de connexion transitoire.
+11. **Threads** : `POST /messages` (racine) puis `POST /reply {replyTo}` ; `GET /thread/:id`
+    renvoie les deux messages ordonnés, la réponse a `to` = expéditeur du parent, le même
+    `threadId` et un `subject` en `"Re: …"`. `mailbox_reply` puis `mailbox_thread` : idem.
+12. **Rétro-compat threads** : un `store` v0.1 (messages sans `threadId`) démarre sans erreur,
+    chaque message reçoit `threadId = son id`.

@@ -130,6 +130,7 @@ const TOOLS = [
         to: { type: 'string', description: 'Projet destinataire (ex: "frontend"), "*" pour tous, ou "#canal" pour un sujet nommé.' },
         body: { type: 'string', description: 'Contenu du message.' },
         subject: { type: 'string', description: 'Sujet court (optionnel).' },
+        replyTo: { type: 'string', description: 'Id d\'un message auquel rattacher celui-ci (même fil). Pour répondre à un expéditeur, préférer mailbox_reply.' },
       },
       required: ['to', 'body'],
     },
@@ -146,6 +147,33 @@ const TOOLS = [
         status: { type: 'string', enum: ['unread', 'read', 'all'], description: 'Filtre (défaut "unread").' },
         markRead: { type: 'boolean', description: 'Si true, acquitte les messages lus (défaut false).' },
       },
+    },
+  },
+  {
+    name: 'mailbox_reply',
+    description:
+      "Répond à un message reçu, dans le même fil de discussion (thread). Le destinataire est " +
+      "automatiquement l'expéditeur du message d'origine ; le sujet hérite (\"Re: …\"). À utiliser " +
+      'pour le mode question/réponse plutôt que mailbox_send.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        replyTo: { type: 'string', description: "Id du message auquel on répond (ex: \"msg_00042\")." },
+        body: { type: 'string', description: 'Contenu de la réponse.' },
+        subject: { type: 'string', description: 'Sujet (optionnel ; sinon hérite du message parent).' },
+      },
+      required: ['replyTo', 'body'],
+    },
+  },
+  {
+    name: 'mailbox_thread',
+    description: "Récupère tous les messages d'un fil de discussion (thread), triés du plus ancien au plus récent.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        threadId: { type: 'string', description: 'Id du fil (champ "threadId" d\'un message ; souvent l\'id du message racine).' },
+      },
+      required: ['threadId'],
     },
   },
   {
@@ -175,8 +203,22 @@ async function callTool(name, args) {
       if (!args.to || !args.body) throw new Error('"to" et "body" sont requis');
       const r = await brokerCall('POST', '/messages', {
         from: CONFIG.project, to: args.to, subject: args.subject || '', body: args.body,
+        replyTo: args.replyTo || undefined,
       });
-      return `Message envoyé à « ${args.to} » (id ${r.id}) depuis « ${CONFIG.project} ».`;
+      return `Message envoyé à « ${args.to} » (id ${r.id}, fil ${r.threadId}) depuis « ${CONFIG.project} ».`;
+    }
+    case 'mailbox_reply': {
+      if (!CONFIG.project) throw new Error('projet émetteur non configuré (MAILBOX_PROJECT ou .mailbox.json)');
+      if (!args.replyTo || !args.body) throw new Error('"replyTo" et "body" sont requis');
+      const r = await brokerCall('POST', '/reply', {
+        from: CONFIG.project, replyTo: args.replyTo, subject: args.subject || undefined, body: args.body,
+      });
+      return `Réponse envoyée à « ${r.to} » dans le fil ${r.threadId} (id ${r.id}).`;
+    }
+    case 'mailbox_thread': {
+      if (!args.threadId) throw new Error('"threadId" est requis');
+      const r = await brokerCall('GET', `/thread/${encodeURIComponent(args.threadId)}`);
+      return JSON.stringify({ threadId: r.threadId, count: r.count, messages: r.messages || [] }, null, 2);
     }
     case 'mailbox_inbox': {
       if (!CONFIG.project) throw new Error('projet non configuré (MAILBOX_PROJECT ou .mailbox.json)');

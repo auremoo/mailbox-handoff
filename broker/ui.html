@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>📬 mailbox — monitoring</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2029; --panel2:#222b36; --line:#2d3744;
+    --fg:#e6edf3; --muted:#8b98a5; --accent:#4493f8; --ok:#3fb950; --warn:#d29922; --err:#f85149;
+    --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font-family:system-ui,Segoe UI,Roboto,sans-serif; font-size:14px; line-height:1.5; }
+  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0; font-weight:650; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:6px; }
+  .dot.ok{background:var(--ok)} .dot.err{background:var(--err)} .dot.idle{background:var(--muted)}
+  .grow { flex:1 1 auto; }
+  .token { display:flex; align-items:center; gap:6px; }
+  input, textarea, select, button { font:inherit; color:var(--fg);
+    background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; }
+  input::placeholder, textarea::placeholder { color:var(--muted); }
+  button { background:var(--accent); border-color:var(--accent); color:#fff; cursor:pointer; font-weight:550; }
+  button.secondary { background:var(--panel2); border-color:var(--line); color:var(--fg); font-weight:450; }
+  button:hover { filter:brightness(1.08); }
+  nav { display:flex; gap:4px; padding:10px 20px 0; border-bottom:1px solid var(--line); background:var(--panel); }
+  nav button { background:none; border:none; border-bottom:2px solid transparent; border-radius:0;
+    color:var(--muted); padding:8px 14px; font-weight:550; }
+  nav button.active { color:var(--fg); border-bottom-color:var(--accent); }
+  main { padding:20px; max-width:1100px; }
+  section { display:none; } section.active { display:block; }
+  h2 { font-size:15px; margin:0 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  h3 { font-size:14px; margin:18px 0 8px; color:var(--fg); }
+  .card ol, .card ul { margin:6px 0; padding-left:22px; }
+  .card li { margin:3px 0; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:550; font-size:12px; text-transform:uppercase; }
+  .tag { display:inline-block; background:var(--panel2); border:1px solid var(--line);
+    border-radius:20px; padding:1px 9px; font-size:12px; color:var(--muted); margin:1px 2px; }
+  .tag.chan { color:var(--accent); border-color:var(--accent); }
+  .muted { color:var(--muted); }
+  .mono { font-family:var(--mono); font-size:12px; }
+  .thread { border:1px solid var(--line); border-radius:8px; margin-bottom:10px; overflow:hidden; }
+  .thread > .head { padding:10px 14px; cursor:pointer; display:flex; gap:10px; align-items:center;
+    background:var(--panel2); }
+  .thread > .head:hover { filter:brightness(1.1); }
+  .thread .msgs { padding:0 14px; display:none; }
+  .thread.open .msgs { display:block; }
+  .msg { border-bottom:1px solid var(--line); padding:10px 0; }
+  .msg:last-child { border-bottom:none; }
+  .msg .meta { font-size:12px; color:var(--muted); margin-bottom:3px; }
+  .msg .body { white-space:pre-wrap; }
+  .badge { background:var(--accent); color:#fff; border-radius:20px; padding:1px 8px; font-size:11px; }
+  .badge.zero { background:var(--panel2); color:var(--muted); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:720px){ .grid2{grid-template-columns:1fr} }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  textarea { width:100%; min-height:70px; resize:vertical; }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:12px;
+    overflow:auto; font-family:var(--mono); font-size:12px; margin:6px 0; position:relative; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .row > div { flex:1 1 160px; }
+  .toast { position:fixed; bottom:20px; right:20px; background:var(--panel2);
+    border:1px solid var(--line); border-radius:8px; padding:10px 16px; opacity:0; transition:.25s; }
+  .toast.show { opacity:1; }
+  .copy { position:absolute; top:8px; right:8px; padding:3px 8px; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📬 mailbox</h1>
+  <span id="health" class="muted"><span class="dot idle"></span>…</span>
+  <span class="grow"></span>
+  <span class="token">
+    <input id="token" type="password" placeholder="jeton (si requis)" size="14" autocomplete="off">
+    <button class="secondary" onclick="saveToken()">OK</button>
+  </span>
+  <button class="secondary" onclick="refresh()">↻ Rafraîchir</button>
+</header>
+
+<nav>
+  <button class="active" data-tab="threads" onclick="tab('threads')">Fils</button>
+  <button data-tab="registry" onclick="tab('registry')">Registre</button>
+  <button data-tab="send" onclick="tab('send')">Envoyer</button>
+  <button data-tab="config" onclick="tab('config')">Config client</button>
+  <button data-tab="server" onclick="tab('server')">Serveur</button>
+  <button data-tab="guide" onclick="tab('guide')">Guide</button>
+</nav>
+
+<main>
+  <!-- FILS -->
+  <section id="threads" class="active">
+    <h2>Fils de discussion</h2>
+    <div id="threadsList" class="muted">Chargement…</div>
+  </section>
+
+  <!-- REGISTRE -->
+  <section id="registry">
+    <h2>Projets / agents connus</h2>
+    <div class="card"><table id="regTable"><thead><tr>
+      <th>Projet</th><th>Hôte</th><th>Canaux</th><th>Vu en dernier</th>
+    </tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <!-- ENVOYER -->
+  <section id="send">
+    <h2>Envoyer un message de test</h2>
+    <div class="card">
+      <div class="row">
+        <div><label>De (projet émetteur)</label><input id="s_from" placeholder="monitoring"></div>
+        <div><label>À (projet, * ou #canal)</label><input id="s_to" placeholder="frontend"></div>
+        <div><label>Sujet (optionnel)</label><input id="s_subject" placeholder="Test"></div>
+      </div>
+      <label>Corps</label>
+      <textarea id="s_body" placeholder="Message…"></textarea>
+      <div class="row" style="margin-top:10px">
+        <div style="flex:0 0 auto"><button onclick="sendMsg()">Envoyer</button></div>
+        <div class="muted" style="align-self:center">Pour répondre dans un fil, déplie-le dans l'onglet « Fils ».</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONFIG CLIENT -->
+  <section id="config">
+    <h2>Générateur de config client</h2>
+    <div class="card">
+      <p class="muted">Renseigne un projet, copie la commande sur la machine cliente (la mini-UI ne configure pas
+      les machines distantes — elle produit ce qu'il faut coller).</p>
+      <div class="grid2">
+        <div>
+          <label>Nom logique du projet</label><input id="c_project" placeholder="frontend" oninput="genConfig()">
+          <label>Chemin du projet (sur la machine cliente)</label><input id="c_dir" placeholder="D:\dev\mon-frontend" oninput="genConfig()">
+          <label>Canaux (séparés par des virgules, optionnel)</label><input id="c_channels" placeholder="auth,billing" oninput="genConfig()">
+        </div>
+        <div>
+          <label>URL du broker</label><input id="c_broker" oninput="genConfig()">
+          <label>Jeton partagé (optionnel)</label><input id="c_token" placeholder="(vide si pas de MAILBOX_TOKEN)" oninput="genConfig()">
+        </div>
+      </div>
+      <label style="margin-top:14px">Commande à lancer (PowerShell, dossier <span class="mono">mailbox-handoff</span>)</label>
+      <pre><button class="copy secondary" onclick="copyPre(this)">copier</button><code id="c_cmd"></code></pre>
+      <div class="grid2">
+        <div><label>.mailbox.json</label><pre><button class="copy secondary" onclick="copyPre(this)">copier</button><code id="c_mailbox"></code></pre></div>
+        <div><label>.mcp.json (serveur « mailbox »)</label><pre><button class="copy secondary" onclick="copyPre(this)">copier</button><code id="c_mcp"></code></pre></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SERVEUR / SERVICE WINDOWS -->
+  <section id="server">
+    <h2>Service Windows du broker</h2>
+    <div class="card">
+      <p class="muted">Installe le broker comme <b>vrai service Windows</b> (démarrage automatique sans
+      session ouverte, redémarrage auto). À faire <b>depuis la machine serveur</b> (cette page ouverte
+      sur <span class="mono">http://localhost</span>) et avec le broker lancé dans un <b>PowerShell Administrateur</b>.</p>
+      <div id="srvStatus" class="muted">Chargement de l'état…</div>
+      <div class="row" style="margin-top:14px">
+        <div style="flex:0 0 auto"><button id="btnInstall" onclick="installService()">Installer / mettre à jour le service</button></div>
+        <div style="flex:0 0 auto"><button id="btnRemove" class="secondary" onclick="removeService()">Désinstaller le service</button></div>
+      </div>
+      <div id="srvMsg" class="muted" style="margin-top:12px"></div>
+    </div>
+  </section>
+
+  <!-- GUIDE / AIDE -->
+  <section id="guide">
+    <h2>Guide — installation &amp; mises à jour</h2>
+    <p class="muted">Ce broker : <span class="mono gbroker"></span>. Les commandes se lancent depuis le
+    dossier <span class="mono">mailbox-handoff</span> (PowerShell). Remplace les <span class="mono">&lt;…&gt;</span>.</p>
+
+    <div class="card">
+      <h3 style="margin-top:0">🖥️ Serveur (le broker) — sur la machine qui héberge la messagerie</h3>
+      <p><b>A. Première installation</b></p>
+      <ol class="muted">
+        <li>Copie/clone le dossier <span class="mono">mailbox-handoff</span> sur la machine serveur.</li>
+        <li>Dans un <b>PowerShell Administrateur</b> : <span class="mono">npm install</span> (installe better-sqlite3, requis côté broker).</li>
+        <li>Lance le broker — au choix :</li>
+      </ol>
+      <pre><button class="copy secondary" onclick="copyPre(this)">copier</button><code>.\setup-server.ps1            # broker en avant-plan (test)
+.\setup-server.ps1 -Service   # VRAI service Windows (auto-démarrage, sans session)</code></pre>
+      <p><b>B. Mise à jour vers une nouvelle version</b></p>
+      <ol class="muted">
+        <li><span class="mono">git pull</span> (ou recopie le dossier) sur la machine serveur.</li>
+        <li><span class="mono">npm install</span> (si de nouvelles dépendances).</li>
+        <li>Arrête l'ancien broker — ferme sa fenêtre, ou <span class="mono">.\setup-server.ps1 -RemoveService</span> si c'était un service.</li>
+        <li>Relance : <span class="mono">.\setup-server.ps1 -Service</span>.</li>
+      </ol>
+      <p class="muted">↪ Au 1er démarrage de la nouvelle version, l'ancien <span class="mono">store.json</span> est
+      <b>migré automatiquement</b> en base SQLite (<span class="mono">store.db</span>) — tes messages et canaux sont conservés.</p>
+      <p><b>C. Installer le service depuis cette page</b> — onglet <b>Serveur</b> : possible uniquement si tu
+      ouvres l'UI <b>sur la machine serveur</b> (<span class="mono">http://localhost:&lt;port&gt;/</span>) et que le broker
+      a été lancé en <b>PowerShell Admin</b>.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">💻 Client (chaque projet / machine qui dialogue)</h3>
+      <p><b>A. Rattacher un projet</b> — sur la machine cliente :</p>
+      <pre><button class="copy secondary" onclick="copyPre(this)">copier</button><code>.\setup-client.ps1 -Project &lt;nom&gt; -Broker <span class="gbroker">http://&lt;ip&gt;:7777</span> -ProjectDir &lt;chemin-du-projet&gt; -Channels &lt;canal&gt;</code></pre>
+      <p class="muted">L'onglet <b>Config client</b> génère cette commande remplie pour toi. Puis <b>recharge la session
+      Claude Code</b> du projet. <b>Important :</b> repasse <span class="mono">-Channels</span> à chaque réinstall, sinon
+      l'abonnement au canal est perdu.</p>
+      <p><b>B. Mettre à jour un client (et corriger la réception)</b> :</p>
+      <pre><button class="copy secondary" onclick="copyPre(this)">copier</button><code>.\install.ps1 -SkipProject</code></pre>
+      <p class="muted">Réécrit les scripts <span class="mono">~/.claude/</span> + corrige le hook (chemin absolu, dédoublonné).
+      À faire si « <i>je dois dire à l'agent d'aller voir sa boîte pour qu'il voie le message</i> » : c'est le signe d'un
+      hook branché en <span class="mono">%USERPROFILE%</span> non expansé.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">📡 Canaux &nbsp; · &nbsp; 🧵 Fils (question/réponse)</h3>
+      <ul class="muted">
+        <li><b>S'abonner à un canal</b> (ex. <span class="mono">sanofi-ls1</span>) : ajoute <span class="mono">-Channels sanofi-ls1</span> à l'install client. Les messages du canal sont conservés côté broker quoi qu'il arrive.</li>
+        <li><b>Écrire à un canal</b> : <span class="mono">/msg #sanofi-ls1 &lt;texte&gt;</span> — seuls les abonnés le reçoivent.</li>
+        <li><b>Répondre dans un fil</b> : tool MCP <span class="mono">mailbox_reply</span> (<span class="mono">replyTo=&lt;id&gt;</span>) ou <span class="mono">/msg --reply &lt;id&gt; &lt;texte&gt;</span>. Relire un fil : <span class="mono">mailbox_thread</span> ou l'onglet <b>Fils</b>.</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+'use strict';
+var TOKEN = sessionStorage.getItem('mbtoken') || '';
+document.getElementById('token').value = TOKEN;
+
+function headers(json) {
+  var h = {};
+  if (json) h['Content-Type'] = 'application/json';
+  if (TOKEN) h['X-Mailbox-Token'] = TOKEN;
+  return h;
+}
+async function api(method, path, body) {
+  var opt = { method: method, headers: headers(!!body) };
+  if (body) opt.body = JSON.stringify(body);
+  var r = await fetch(path, opt);
+  if (r.status === 401) { toast('Jeton requis ou invalide.'); throw new Error('401'); }
+  var data = await r.json().catch(function(){ return {}; });
+  if (!r.ok) { toast(data.error || ('Erreur ' + r.status)); throw new Error(data.error || r.status); }
+  return data;
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
+function toast(m){ var t=document.getElementById('toast'); t.textContent=m; t.classList.add('show');
+  clearTimeout(toast._t); toast._t=setTimeout(function(){t.classList.remove('show');},2200); }
+function saveToken(){ TOKEN=document.getElementById('token').value.trim();
+  sessionStorage.setItem('mbtoken',TOKEN); toast('Jeton enregistré.'); refresh(); }
+function tab(name){
+  document.querySelectorAll('nav button').forEach(function(b){ b.classList.toggle('active', b.dataset.tab===name); });
+  document.querySelectorAll('main section').forEach(function(s){ s.classList.toggle('active', s.id===name); });
+  if(name==='server') loadAdmin();
+}
+
+async function loadHealth(){
+  var el=document.getElementById('health');
+  try { var h=await api('GET','/health');
+    el.innerHTML='<span class="dot ok"></span>broker en ligne — '+h.messages+' message(s)';
+  } catch(e){ el.innerHTML='<span class="dot err"></span>broker injoignable'; }
+}
+async function loadRegistry(){
+  var tb=document.querySelector('#regTable tbody');
+  try {
+    var d=await api('GET','/registry'); var rows=d.projects||[];
+    if(!rows.length){ tb.innerHTML='<tr><td colspan="4" class="muted">Aucun projet enregistré.</td></tr>'; return; }
+    tb.innerHTML=rows.map(function(p){
+      var chans=(p.channels||[]).map(function(c){return '<span class="tag chan">'+esc(c)+'</span>';}).join('')||'<span class="muted">—</span>';
+      return '<tr><td><b>'+esc(p.project)+'</b></td><td class="mono">'+esc(p.host||'—')+
+        '</td><td>'+chans+'</td><td class="mono muted">'+esc(p.lastSeen||'—')+'</td></tr>';
+    }).join('');
+  } catch(e){ tb.innerHTML='<tr><td colspan="4" class="muted">—</td></tr>'; }
+}
+async function loadThreads(){
+  var box=document.getElementById('threadsList');
+  try {
+    var d=await api('GET','/threads'); var ts=d.threads||[];
+    if(!ts.length){ box.innerHTML='<div class="muted">Aucun message.</div>'; return; }
+    box.innerHTML=ts.map(function(t){
+      var b=t.unread>0?'<span class="badge">'+t.unread+' non-lu</span>':'<span class="badge zero">lu</span>';
+      var subj=t.subject?esc(t.subject):'<span class="muted">(sans sujet)</span>';
+      return '<div class="thread" data-id="'+esc(t.threadId)+'">'+
+        '<div class="head" onclick="toggleThread(this)">'+b+
+        ' <b>'+subj+'</b> <span class="muted mono">'+esc(t.threadId)+'</span>'+
+        ' <span class="grow"></span><span class="muted">'+esc((t.participants||[]).join(' ↔ '))+
+        ' · '+t.count+' msg</span></div><div class="msgs muted">…</div></div>';
+    }).join('');
+  } catch(e){ box.innerHTML='<div class="muted">—</div>'; }
+}
+async function toggleThread(head){
+  var el=head.parentElement; el.classList.toggle('open');
+  if(!el.classList.contains('open')) return;
+  var box=el.querySelector('.msgs');
+  try {
+    var d=await api('GET','/thread/'+encodeURIComponent(el.dataset.id));
+    box.classList.remove('muted');
+    box.innerHTML=(d.messages||[]).map(function(m){
+      var dest=m.to==='*'?' → tous':(m.to&&m.to[0]==='#'?' → '+esc(m.to):' → '+esc(m.to));
+      return '<div class="msg"><div class="meta"><b>'+esc(m.from)+'</b>'+dest+
+        ' · <span class="mono">'+esc(m.id)+'</span> · '+esc(m.createdAt)+
+        (m.subject?' · '+esc(m.subject):'')+(m.status==='unread'?' · <span style="color:var(--accent)">non-lu</span>':'')+
+        '</div><div class="body">'+esc(m.body)+'</div>'+
+        '<div style="margin-top:6px"><button class="secondary" onclick="quickReply(\''+esc(m.id)+'\',\''+esc(m.to)+'\')">Répondre dans le fil</button></div></div>';
+    }).join('');
+  } catch(e){ box.textContent='—'; }
+}
+function quickReply(id, asProject){
+  tab('send');
+  document.getElementById('s_from').value = asProject==='*'?'monitoring':asProject;
+  document.getElementById('s_to').value = '';
+  document.getElementById('s_subject').value = '';
+  document.getElementById('s_body').dataset.replyTo = id;
+  document.getElementById('s_body').focus();
+  toast('Réponse au message '+id+' : l’envoi utilisera /reply (destinataire déduit).');
+}
+async function sendMsg(){
+  var from=document.getElementById('s_from').value.trim();
+  var body=document.getElementById('s_body').value.trim();
+  var subject=document.getElementById('s_subject').value.trim();
+  var replyTo=document.getElementById('s_body').dataset.replyTo;
+  if(!from||!body){ toast('« De » et « Corps » sont requis.'); return; }
+  try {
+    if(replyTo){
+      var r=await api('POST','/reply',{from:from,replyTo:replyTo,subject:subject||undefined,body:body});
+      toast('Réponse envoyée à '+r.to+' (fil '+r.threadId+').');
+      delete document.getElementById('s_body').dataset.replyTo;
+    } else {
+      var to=document.getElementById('s_to').value.trim();
+      if(!to){ toast('« À » est requis.'); return; }
+      var r2=await api('POST','/messages',{from:from,to:to,subject:subject,body:body});
+      toast('Message envoyé (id '+r2.id+').');
+    }
+    document.getElementById('s_body').value=''; refresh();
+  } catch(e){}
+}
+
+function genConfig(){
+  var p=document.getElementById('c_project').value.trim()||'<projet>';
+  var dir=document.getElementById('c_dir').value.trim()||'<chemin-du-projet>';
+  var broker=document.getElementById('c_broker').value.trim()||location.origin;
+  var token=document.getElementById('c_token').value.trim();
+  var chans=document.getElementById('c_channels').value.split(',').map(function(c){return c.trim();}).filter(Boolean);
+  var cmd='.\\setup-client.ps1 -Project '+p+' -Broker '+broker+' -ProjectDir '+dir;
+  if(chans.length) cmd+=' -Channels '+chans.join(',');
+  if(token) cmd+=' -Token '+token;
+  document.getElementById('c_cmd').textContent=cmd;
+  var mb={project:p,broker:broker};
+  if(token) mb.token=token;
+  if(chans.length) mb.channels=chans;
+  document.getElementById('c_mailbox').textContent=JSON.stringify(mb,null,2);
+  var env={MAILBOX_PROJECT:p,MAILBOX_BROKER:broker};
+  if(token) env.MAILBOX_TOKEN=token;
+  if(chans.length) env.MAILBOX_CHANNELS=chans.join(',');
+  var mcp={mcpServers:{mailbox:{command:'node',args:['C:\\Users\\<toi>\\.claude\\mailbox-mcp.js'],env:env}}};
+  document.getElementById('c_mcp').textContent=JSON.stringify(mcp,null,2);
+}
+function copyPre(btn){
+  var code=btn.parentElement.querySelector('code').textContent;
+  navigator.clipboard.writeText(code).then(function(){toast('Copié.');},function(){toast('Copie impossible.');});
+}
+
+async function loadAdmin(){
+  var box=document.getElementById('srvStatus');
+  var bI=document.getElementById('btnInstall'), bR=document.getElementById('btnRemove');
+  try {
+    var r=await fetch('/admin/status',{headers:headers(false)});
+    if(r.status===403){ box.innerHTML='<span class="dot err"></span>Ouvre cette page <b>sur la machine serveur</b> (http://localhost) — les actions service sont réservées au local.'; bI.disabled=bR.disabled=true; return; }
+    var d=await r.json();
+    var s=d.service||{};
+    if(!s.isWindows){ box.innerHTML='<span class="dot idle"></span>Service Windows uniquement (serveur sous '+esc(s.platform)+').'; bI.disabled=bR.disabled=true; return; }
+    var parts=[];
+    parts.push(s.state ? '<span class="dot ok"></span>Service « '+esc(s.serviceName)+' » : <b>'+esc(s.state)+'</b>'
+                       : '<span class="dot idle"></span>Service non installé');
+    parts.push(s.admin ? '<span class="tag" style="color:var(--ok)">Admin ✓</span>'
+                       : '<span class="tag" style="color:var(--warn)">PowerShell non-Admin — installation impossible</span>');
+    parts.push(s.nssm ? '<span class="tag">nssm ✓</span>' : '<span class="tag" style="color:var(--err)">nssm.exe absent</span>');
+    box.innerHTML=parts.join(' &nbsp; ');
+    bI.disabled=!(s.admin && s.nssm);
+    bR.disabled=!(s.admin && s.nssm && s.state);
+  } catch(e){ box.innerHTML='<span class="dot err"></span>État indisponible.'; }
+}
+async function installService(){
+  document.getElementById('srvMsg').textContent='Installation en cours…';
+  try { var d=await api('POST','/admin/service/install'); document.getElementById('srvMsg').innerHTML='✅ '+esc(d.message); toast('Service installé.'); }
+  catch(e){ document.getElementById('srvMsg').innerHTML='⚠ '+esc(e.message); }
+  loadAdmin();
+}
+async function removeService(){
+  if(!confirm('Désinstaller le service MailboxBroker ?')) return;
+  try { var d=await api('POST','/admin/service/remove'); document.getElementById('srvMsg').innerHTML='✅ '+esc(d.message); toast('Service désinstallé.'); }
+  catch(e){ document.getElementById('srvMsg').innerHTML='⚠ '+esc(e.message); }
+  loadAdmin();
+}
+
+function refresh(){ loadHealth(); loadRegistry(); loadThreads(); }
+document.getElementById('c_broker').value=location.origin;
+document.querySelectorAll('.gbroker').forEach(function(e){ e.textContent=location.origin; });
+genConfig(); refresh();
+setInterval(loadHealth, 10000);
+</script>
+</body>
+</html>

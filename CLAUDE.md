@@ -14,9 +14,11 @@ commande `/msg` fait l'envoi.
 Ne pas confondre avec `/handoff` (relais Claude → autre LLM via `CONTEXT.md`) :
 c'est un système **différent et indépendant**.
 
-## Architecture (6 pièces)
+## Architecture (7 pièces)
 
-- `broker/server.js` — serveur HTTP Node.js **sans dépendance** (http natif + JSON).
+- `broker/server.js` — serveur HTTP Node.js (couche HTTP en API standard).
+- `broker/store.js` — couche de persistance **SQLite** (`better-sqlite3`) : isole tout
+  l'accès au stockage (messages, fils, registre, migration depuis l'ancien JSON).
 - `client/mailbox-check.ps1` — hook de réception (déployé en `~/.claude/`).
 - `client/mailbox-send.ps1` — envoi par script (déployé en `~/.claude/`).
 - `mcp/mailbox-mcp.js` — façade MCP, tools `mailbox_*` (JSON-RPC stdio, **sans dépendance**).
@@ -28,15 +30,19 @@ Référence complète : [SPECS.md](SPECS.md). Vue d'ensemble : [README.md](READM
 
 ## Règles de conception à respecter
 
-- **Zéro dépendance pour le broker ET la façade MCP.** Pas de `npm install`, pas
-  de SDK MCP. Rester sur l'API Node standard (`http`, `https`, `fs`, `path`, `URL`).
-  Le serveur MCP parle JSON-RPC stdio à la main. Si une dépendance semble
-  nécessaire, proposer d'abord, ne pas l'ajouter d'office.
+- **Dépendances : minimalisme strict.** Le broker a **une seule** dépendance assumée,
+  `better-sqlite3` (persistance — exige `npm install` sur la machine broker uniquement).
+  La **façade MCP** (`mcp/mailbox-mcp.js`) **et les scripts client restent zéro-dépendance** :
+  ils parlent HTTP/JSON-RPC à la main (API Node standard `http`/`https`/`fs`/`path`/`URL`,
+  pas de SDK MCP, pas de `fetch`/undici). Toute nouvelle dépendance se propose d'abord,
+  ne s'ajoute pas d'office.
 - **La façade MCP n'utilise pas `fetch`/undici** mais `http`/`https` (connexion
   fraîche, pas de pool keep-alive qui réutiliserait un socket périmé sur ce process
   long-vivant), avec un retry sur erreur de connexion transitoire.
-- **Le broker ne doit jamais perdre de message silencieusement.** Toute écriture
-  passe par le remplacement atomique (`.tmp` puis `rename`).
+- **Le broker ne doit jamais perdre de message silencieusement.** La durabilité est
+  assurée par SQLite en mode WAL (transactions). Les écritures multi-lignes (migration,
+  ack groupé) passent par une transaction `better-sqlite3`. Tout l'accès au stockage
+  reste confiné dans `broker/store.js` — `server.js` ne touche jamais au SQL directement.
 - **Les hooks ne doivent jamais bloquer ou faire échouer une session.** En cas
   d'erreur (broker down, config absente), sortir proprement (code 0) avec au plus
   une note de contexte. Tester systématiquement le cas « broker injoignable ».
@@ -93,8 +99,11 @@ Si tu es un agent dans un projet **rattaché** (présence d'un `.mailbox.json`) 
   utilise le tool MCP `mailbox_send` (si la façade MCP est branchée) **ou** la
   commande `/msg <destinataire> <ton message>`. Destinataire : un nom de projet, `*`
   pour tous, ou `#canal` pour un sujet nommé (seuls les abonnés du canal reçoivent).
-- Tools MCP disponibles si branchés : `mailbox_send`, `mailbox_inbox`, `mailbox_ack`,
-  `mailbox_registry`.
+- Tools MCP disponibles si branchés : `mailbox_send`, `mailbox_inbox`, `mailbox_reply`,
+  `mailbox_thread`, `mailbox_ack`, `mailbox_registry`.
+- Pour **répondre dans un fil** (question/réponse) : `mailbox_reply` (replyTo = id du
+  message reçu) ou `/msg --reply <id> <texte>`. La réponse repart vers l'expéditeur
+  d'origine et conserve le `threadId` ; `mailbox_thread` relit tout le fil.
 - L'envoi est fire-and-forget : n'attends pas de réponse synchrone ; l'autre agent
   réagira à sa prochaine prise de main.
 - Envoie un message **quand ta modification impacte un autre projet** : signature
