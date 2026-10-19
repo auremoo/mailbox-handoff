@@ -1,4 +1,4 @@
-# setup-client.ps1 — Installation « facile » d'un CLIENT (un projet participant).
+﻿# setup-client.ps1 — Installation « facile » d'un CLIENT (un projet participant).
 #
 # Wrapper convivial autour de install.ps1 :
 #   - demande les infos manquantes (terminal interactif),
@@ -19,6 +19,8 @@ param(
     [string]$Token = "",
     [string[]]$Channels = @(),   # canaux/sujets auxquels s'abonner (ex: sujet-x, sujet-y)
     [string]$ProjectDir,
+    [ValidateSet('auto', 'node', 'powershell')]
+    [string]$HookRuntime = 'auto',   # moteur du hook de réception (auto = node si présent)
     [switch]$NoProbe   # saute la vérification de joignabilité du broker
 )
 
@@ -57,7 +59,7 @@ if (-not $NoProbe) {
         $headers = @{}
         if ($Token) { $headers['X-Mailbox-Token'] = $Token }
         $h = Invoke-RestMethod -Uri "$Broker/health" -Headers $headers -TimeoutSec 5
-        if ($h.ok) { Write-Host "✅ Broker joignable (service: $($h.service))." }
+        if ($h.ok) { Write-Host "✅ Broker joignable (service: $($h.service), version: $($h.version))." }
         else { Write-Host "⚠ Réponse inattendue du broker." -ForegroundColor Yellow }
     } catch {
         Write-Host "⚠ Broker injoignable : $($_.Exception.Message)" -ForegroundColor Yellow
@@ -68,7 +70,7 @@ if (-not $NoProbe) {
 
 # --- Délégation à install.ps1 -------------------------------------------------
 $installer = Join-Path $srcDir 'install.ps1'
-$params = @{ Project = $Project; Broker = $Broker; ProjectDir = $ProjectDir }
+$params = @{ Project = $Project; Broker = $Broker; ProjectDir = $ProjectDir; HookRuntime = $HookRuntime }
 if ($Token) { $params['Token'] = $Token }
 if ($Channels.Count -gt 0) { $params['Channels'] = $Channels }
 & $installer @params

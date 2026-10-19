@@ -335,6 +335,20 @@
             <li><b>S'abonner</b> à un canal : ajoute-le dans « Canaux » à l'install client. Les messages du canal sont conservés côté broker.</li>
             <li><b>Écrire à un canal</b> : destinataire <span class="mono">#canal</span> — seuls les abonnés le reçoivent.</li>
             <li><b>Répondre</b> reste dans le même fil (bouton Répondre d'une conversation, ou tool MCP <span class="mono">mailbox_reply</span>).</li>
+            <li><b>Lecture par projet</b> : chaque abonné reçoit une fois chaque message de canal ou de diffusion, même si un autre l'a déjà lu.
+              On ne reçoit pas ses propres envois, ni les messages de groupe antérieurs à sa première connexion.</li>
+            <li>Dans une conversation, <b>⏳</b> liste les projets qui n'ont pas encore reçu le message, <b>✓</b> ceux qui l'ont lu.
+              « Marquer vu » n'éteint que l'indicateur de cette page : les agents reçoivent quand même.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>🩺 Dépannage</h2>
+          <ul class="muted">
+            <li><b>Rien n'arrive dans l'agent</b> : recharge la session Claude Code ; vérifie <span class="mono">.mailbox.json</span> à la racine du projet ouvert ;
+              mets le client à jour (re‑double‑clic du <span class="mono">.cmd</span>) — avant la 0.2, le hook PowerShell ne se lançait pas sous Windows PowerShell 5.1.</li>
+            <li><b>« Broker injoignable »</b> : le hook réessaie seul toutes les 60 s, sans ralentir les prompts entre‑temps. Teste <span class="mono">http://&lt;ip&gt;:&lt;port&gt;/health</span> depuis le client ; pense au pare‑feu.</li>
+            <li><b>« HTTP 401 »</b> : jeton absent ou différent de <span class="mono">MAILBOX_TOKEN</span>. <b>« HTTP 400 »</b> : nom de projet réservé (<span class="mono">*</span>, <span class="mono">#…</span>, <span class="mono">@…</span>, <span class="mono">|</span>).</li>
+            <li><b>Beaucoup de messages en attente</b> : ils arrivent par lots de 20 par prompt ; un message de plus de 4000 caractères est tronqué (lecture complète : <span class="mono">mailbox_thread</span>).</li>
           </ul>
         </div>
         <div class="card">
@@ -502,7 +516,7 @@ async function openConv(key,keep){
       '<span class="spacer" style="flex:1"></span>'+
       (msgs.length>1?'<button class="ghost sm" onclick="expandAll(false)">Tout replier</button>'+
         '<button class="ghost sm" onclick="expandAll(true)">Tout déplier</button>':'')+
-      (unreadIds.length?'<button class="ghost sm" onclick=\'ackConv('+JSON.stringify(unreadIds)+')\'>Marquer lu</button>':'')+
+      (unreadIds.length?'<button class="ghost sm" title="Éteint l\'indicateur non‑lu de cette page, sans rien changer pour les agents" onclick=\'ackConv('+JSON.stringify(unreadIds)+')\'>Marquer vu</button>':'')+
     '</div>'+
     '<div class="msgs" id="msgs">'+msgs.map(function(m,i){return renderMsg(m,i===msgs.length-1);}).join('')+'</div>'+
     '<div class="replybar">'+
@@ -522,17 +536,27 @@ function renderMsg(m,expanded){
       '<span class="tag '+di.cls+'">'+esc(di.label)+'</span>'+
       (m.subject?'<span class="muted">'+esc(m.subject)+'</span>':'')+
       '<span class="spacer" style="flex:1"></span>'+
-      (m.status==='unread'?'<span class="tag dir">non‑lu</span>':'')+
+      deliveryTag(m)+
       '<span class="faint mono">'+esc(m.id)+'</span><span class="faint">'+esc(fmtDate(m.createdAt))+'</span>'+
     '</div>'+
     '<div class="mpreview" onclick="toggleMsg(this)">'+esc(preview)+(m.body&&m.body.length>160?' …':'')+'</div>'+
     '<div class="mbody">'+esc(m.body)+'</div></div>';
 }
+// Remise : qui ne l'a pas encore reçu (pending) / qui l'a lu (readBy, "*" = tous).
+function deliveryTag(m){
+  var pend=m.pending||[],all=(m.readBy||[]).indexOf('*')>=0;
+  var by=(m.readBy||[]).filter(function(p){return p!=='*';});
+  if(pend.length)return '<span class="tag warn" title="Pas encore reçu par">⏳ '+esc(pend.join(', '))+'</span>';
+  if(all)return '<span class="faint" title="Lu (acquittement global)">✓ lu</span>';
+  if(by.length)return '<span class="faint" title="Lu par">✓ '+esc(by.join(', '))+'</span>';
+  return m.status==='unread'?'<span class="tag dir">non‑lu</span>':'';
+}
 function toggleMsg(el){var m=el.closest('.msg');if(m)m.classList.toggle('collapsed');}
 function expandAll(open){document.querySelectorAll('#msgs .msg').forEach(function(m){m.classList.toggle('collapsed',!open);});}
 function closeConv(){document.getElementById('conv').classList.remove('detailopen');CURRENT=null;CURRENTCONV=null;renderConvList();
   document.getElementById('convDetail').innerHTML='<div class="empty"><div class="big">💬</div><div>Sélectionne une conversation.</div></div>';}
-async function ackConv(ids){try{await api('POST','/ack',{ids:ids});toast('Marqué(s) lu(s).');await loadConversations();loadHealth();}catch(e){}}
+// monitorOnly : simple « vu » côté monitoring, n'acquitte RIEN au nom d'un agent.
+async function ackConv(ids){try{await api('POST','/ack',{ids:ids,monitorOnly:true});toast('Marqué(s) vu(s).');await loadConversations();loadHealth();}catch(e){}}
 async function sendConvReply(to){
   var from=document.getElementById('r_from').value.trim();
   var body=document.getElementById('r_body').value.trim();

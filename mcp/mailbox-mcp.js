@@ -7,8 +7,12 @@
  *
  * Serveur MCP minimal (JSON-RPC 2.0 sur stdio, sans dépendance) qui expose au
  * format "tool" les opérations de la mailbox. L'agent appelle directement
- * mailbox_send / mailbox_inbox / mailbox_ack / mailbox_registry sans passer par
+ * mailbox_send / mailbox_inbox / mailbox_reply / mailbox_thread / mailbox_ack /
+ * mailbox_registry sans passer par
  * un script PowerShell.
+ *
+ * Les lectures sont acquittées AU NOM du projet (champ "project" de /ack) : une
+ * diffusion ou un message de canal reste dû aux autres destinataires.
  *
  * Identité du projet + URL broker, par ordre de priorité :
  *   1. variables d'env  MAILBOX_PROJECT / MAILBOX_BROKER / MAILBOX_TOKEN
@@ -64,7 +68,8 @@ const CONFIG = loadConfig();
 // --- Appels HTTP vers le broker ----------------------------------------------
 // Module http/https natif (pas de fetch/undici) : connexion fraîche à chaque
 // appel, sans pool keep-alive susceptible de réutiliser un socket périmé sur un
-// process long-vivant. Cohérent avec le broker (100% stdlib).
+// process long-vivant. agent:false est indispensable : depuis Node 19 l'agent
+// global garde les connexions ouvertes par défaut.
 function brokerFetch(method, route, body) {
   return new Promise((resolve, reject) => {
     if (!CONFIG.broker) {
@@ -75,13 +80,13 @@ function brokerFetch(method, route, body) {
     const payload = body ? JSON.stringify(body) : null;
     const headers = { Accept: 'application/json' };
     if (payload) {
-      headers['Content-Type'] = 'application/json';
+      headers['Content-Type'] = 'application/json; charset=utf-8';
       headers['Content-Length'] = Buffer.byteLength(payload);
     }
     if (CONFIG.token) headers['X-Mailbox-Token'] = CONFIG.token;
 
     const req = lib.request(
-      { method, hostname: url.hostname, port: url.port, path: url.pathname + url.search, headers, timeout: 6000 },
+      { method, hostname: url.hostname, port: url.port, path: url.pathname + url.search, headers, timeout: 6000, agent: false },
       (res) => {
         let text = '';
         res.setEncoding('utf8');
@@ -149,6 +154,7 @@ const TOOLS = [
       properties: {
         status: { type: 'string', enum: ['unread', 'read', 'all'], description: 'Filtre (défaut "unread").' },
         markRead: { type: 'boolean', description: 'Si true, acquitte les messages lus (défaut false).' },
+        limit: { type: 'integer', minimum: 1, maximum: 500, description: 'Nombre max de messages (les plus anciens en premier ; défaut 50).' },
       },
     },
   },
@@ -181,7 +187,7 @@ const TOOLS = [
   },
   {
     name: 'mailbox_ack',
-    description: 'Marque comme lus une liste de messages (par leurs ids).',
+    description: 'Marque comme lus, pour le projet courant, une liste de messages (par leurs ids).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -225,21 +231,25 @@ async function callTool(name, args) {
     }
     case 'mailbox_inbox': {
       if (!CONFIG.project) throw new Error('projet non configuré (MAILBOX_PROJECT ou .mailbox.json)');
-      const status = args.status && args.status !== 'all' ? args.status : null;
-      const params = [];
+      // Défaut "unread" (comme annoncé dans la description du tool) ; "all" = sans filtre.
+      const wanted = args.status || 'unread';
+      const status = wanted === 'all' ? null : wanted;
+      const limit = Math.min(Math.max(parseInt(args.limit, 10) || 50, 1), 500);
+      const params = [`limit=${limit}`];
       if (status) params.push(`status=${encodeURIComponent(status)}`);
       if (CONFIG.channels.length) params.push(`channels=${encodeURIComponent(CONFIG.channels.join(','))}`);
-      const q = params.length ? `?${params.join('&')}` : '';
-      const r = await brokerCall('GET', `/inbox/${encodeURIComponent(CONFIG.project)}${q}`);
+      const r = await brokerCall('GET', `/inbox/${encodeURIComponent(CONFIG.project)}?${params.join('&')}`);
       const msgs = r.messages || [];
       if (args.markRead && msgs.length) {
-        await brokerCall('POST', '/ack', { ids: msgs.map((m) => m.id) }).catch(() => {});
+        await brokerCall('POST', '/ack', { ids: msgs.map((m) => m.id), project: CONFIG.project }).catch(() => {});
       }
-      return JSON.stringify({ project: CONFIG.project, count: msgs.length, messages: msgs }, null, 2);
+      // total > count : il reste des messages au-delà de la limite.
+      const total = typeof r.total === 'number' ? r.total : msgs.length;
+      return JSON.stringify({ project: CONFIG.project, count: msgs.length, total, messages: msgs }, null, 2);
     }
     case 'mailbox_ack': {
       if (!Array.isArray(args.ids)) throw new Error('"ids" doit être un tableau');
-      const r = await brokerCall('POST', '/ack', { ids: args.ids });
+      const r = await brokerCall('POST', '/ack', { ids: args.ids, project: CONFIG.project || undefined });
       return `${r.acked} message(s) acquitté(s).`;
     }
     case 'mailbox_registry': {
@@ -252,7 +262,7 @@ async function callTool(name, args) {
 }
 
 // --- Boucle JSON-RPC sur stdio ------------------------------------------------
-const SERVER_INFO = { name: 'mailbox', version: '0.1.0' };
+const SERVER_INFO = { name: 'mailbox', version: '0.2.0' };
 const DEFAULT_PROTOCOL = '2025-06-18';
 
 function write(msg) {

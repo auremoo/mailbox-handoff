@@ -54,7 +54,7 @@ function status() {
 }
 
 // Installe/réinstalle le service (sans le démarrer — voir entête).
-function install({ port, token, dataFile }) {
+function install({ port, token, dataFile, retentionDays }) {
   if (!isWindows()) throw new Error('Service Windows uniquement (cette machine n\'est pas sous Windows).');
   if (!hasNssm()) throw new Error('nssm.exe introuvable dans vendor/nssm.');
   if (!isAdmin()) throw new Error('Droits Administrateur requis : relance le broker dans un PowerShell « Administrateur », puis réessaie.');
@@ -75,6 +75,7 @@ function install({ port, token, dataFile }) {
   const env = [`MAILBOX_PORT=${port}`];
   if (token) env.push(`MAILBOX_TOKEN=${token}`);
   if (dataFile) env.push(`MAILBOX_DATA=${dataFile}`);
+  if (retentionDays) env.push(`MAILBOX_RETENTION_DAYS=${retentionDays}`);
   execFileSync(NSSM, ['set', SERVICE_NAME, 'AppEnvironmentExtra', env.join('\n')]);
 
   // Logs du service dans data/.

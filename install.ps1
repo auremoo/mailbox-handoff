@@ -1,4 +1,4 @@
-# install.ps1 — Déploie le client mailbox sur la machine courante et rattache un projet.
+﻿# install.ps1 — Déploie le client mailbox sur la machine courante et rattache un projet.
 #
 # À lancer une fois par machine (pour installer les scripts + hooks), puis autant
 # de fois que de projets à rattacher (crée le .mailbox.json de chaque projet).
@@ -15,6 +15,9 @@
 #
 #   # Réinstaller seulement les scripts/hooks, sans rattacher de projet :
 #   .\install.ps1 -SkipProject
+#
+#   # Forcer le hook PowerShell (par défaut : hook Node s'il est installé, ~4x plus rapide) :
+#   .\install.ps1 -SkipProject -HookRuntime powershell
 
 param(
     [string]$Project,
@@ -22,6 +25,8 @@ param(
     [string]$Token = "",
     [string[]]$Channels = @(),   # canaux/sujets auxquels ce projet s'abonne (ex: sujet-x, sujet-y)
     [string]$ProjectDir = (Get-Location).Path,
+    [ValidateSet('auto', 'node', 'powershell')]
+    [string]$HookRuntime = 'auto',   # moteur du hook de réception (auto = node si présent)
     [switch]$SkipProject
 )
 
@@ -39,6 +44,7 @@ New-Item -ItemType Directory -Force -Path $commandsDir | Out-Null
 
 # --- 1. Copie des scripts client + commande + serveur MCP --------------------
 Copy-Item (Join-Path $srcDir 'client\mailbox-check.ps1') (Join-Path $claudeDir 'mailbox-check.ps1') -Force
+Copy-Item (Join-Path $srcDir 'client\mailbox-check.js')  (Join-Path $claudeDir 'mailbox-check.js')  -Force
 Copy-Item (Join-Path $srcDir 'client\mailbox-send.ps1')  (Join-Path $claudeDir 'mailbox-send.ps1')  -Force
 Copy-Item (Join-Path $srcDir 'commands\msg.md')          (Join-Path $commandsDir 'msg.md')          -Force
 $mcpTarget = Join-Path $claudeDir 'mailbox-mcp.js'
@@ -56,11 +62,26 @@ if (-not $settings.PSObject.Properties['hooks']) {
     $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([PSCustomObject]@{})
 }
 
-# Chemin ABSOLU (pas %USERPROFILE%) : le lanceur de hooks de Claude Code n'expanse
+# Chemins ABSOLUS (pas %USERPROFILE%) : le lanceur de hooks de Claude Code n'expanse
 # pas toujours les variables d'environnement style cmd -> %USERPROFILE% resterait
-# littéral et le hook échouerait silencieusement. On résout le chemin à l'install.
-$hookScript = Join-Path $claudeDir 'mailbox-check.ps1'
-$hookCommand = "powershell -NoProfile -File `"$hookScript`""
+# littéral et le hook échouerait silencieusement. On résout les chemins à l'install.
+#
+# Moteur : le hook tourne à CHAQUE prompt. Node démarre en ~100 ms contre ~400 ms
+# pour PowerShell 5.1 -> on le préfère quand il est là (la façade MCP l'exige
+# déjà). Les machines sans Node (ex. poste automate) gardent le hook PowerShell.
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if ($HookRuntime -eq 'node' -and -not $nodeCmd) {
+    Write-Error "-HookRuntime node demandé mais Node.js est introuvable dans le PATH."
+    exit 1
+}
+$useNode = ($HookRuntime -eq 'node') -or ($HookRuntime -eq 'auto' -and $nodeCmd)
+if ($useNode) {
+    $hookCommand = "`"$($nodeCmd.Source)`" `"$(Join-Path $claudeDir 'mailbox-check.js')`""
+    Write-Host "   • Hook de réception : Node ($($nodeCmd.Source))"
+} else {
+    $hookCommand = "powershell -NoProfile -File `"$(Join-Path $claudeDir 'mailbox-check.ps1')`""
+    Write-Host "   • Hook de réception : PowerShell"
+}
 
 function Add-MailboxHook {
     param($Hooks, [string]$EventName, [string]$Command)
@@ -69,14 +90,14 @@ function Add-MailboxHook {
     if ($Hooks.PSObject.Properties[$EventName]) {
         $existing = @($Hooks.$EventName)
     }
-    # Purge toute entrée mailbox-check.ps1 préexistante (y compris l'ancienne forme
-    # %USERPROFILE%) pour éviter les doublons lors d'une mise à jour, puis ré-ajoute
-    # la forme canonique (chemin absolu).
+    # Purge toute entrée mailbox-check.ps1/.js préexistante (y compris l'ancienne
+    # forme %USERPROFILE%, ou l'autre moteur) pour éviter les doublons lors d'une
+    # mise à jour, puis ré-ajoute la forme canonique (chemin absolu).
     $kept = @()
     foreach ($entry in $existing) {
         $isMailbox = $false
         foreach ($h in @($entry.hooks)) {
-            if ($h.command -and $h.command -like '*mailbox-check.ps1*') { $isMailbox = $true }
+            if ($h.command -and ($h.command -like '*mailbox-check.ps1*' -or $h.command -like '*mailbox-check.js*')) { $isMailbox = $true }
         }
         if (-not $isMailbox) { $kept += $entry }
     }
@@ -152,7 +173,7 @@ if ($mcpJson.mcpServers.PSObject.Properties['mailbox']) {
 }
 $mcpJson | ConvertTo-Json -Depth 10 | Out-File -FilePath $mcpConfigPath -Encoding utf8
 Write-Host "✅ Serveur MCP 'mailbox' branché dans $mcpConfigPath"
-Write-Host "   (les tools mailbox_send / mailbox_inbox / mailbox_ack / mailbox_registry seront dispos après reload)"
+Write-Host "   (tools mailbox_send / mailbox_inbox / mailbox_reply / mailbox_thread / mailbox_ack / mailbox_registry dispos après reload)"
 
 # --- 4. Enregistrement auprès du broker (best-effort) ------------------------
 try {
@@ -160,9 +181,9 @@ try {
     if ($Token) { $headers['X-Mailbox-Token'] = $Token }
     $regObj = @{ project = $Project; host = $env:COMPUTERNAME }
     if ($Channels.Count -gt 0) { $regObj['channels'] = $Channels }
-    $body = $regObj | ConvertTo-Json -Compress
+    $body = [System.Text.Encoding]::UTF8.GetBytes(($regObj | ConvertTo-Json -Compress))
     Invoke-RestMethod -Uri "$($Broker.TrimEnd('/'))/register" -Method Post -Headers $headers `
-        -Body $body -ContentType 'application/json' -TimeoutSec 4 | Out-Null
+        -Body $body -ContentType 'application/json; charset=utf-8' -TimeoutSec 4 | Out-Null
     Write-Host "✅ Projet enregistré auprès du broker."
 } catch {
     Write-Host "⚠ Broker injoignable pour l'enregistrement (pas bloquant) : $($_.Exception.Message)"

@@ -1,4 +1,4 @@
-# setup-server.ps1 — Installation « facile » du BROKER sur la machine serveur.
+﻿# setup-server.ps1 — Installation « facile » du BROKER sur la machine serveur.
 #
 # Fait tout en une commande :
 #   1. vérifie Node.js + installe les dépendances du broker (better-sqlite3)
@@ -13,6 +13,7 @@
 #   .\setup-server.ps1 -RemoveService           # désinstalle le service
 #   .\setup-server.ps1 -Port 7777 -Persist      # repli : tâche planifiée à l'ouverture de session
 #   .\setup-server.ps1 -Token monjeton          # exige un jeton partagé
+#   .\setup-server.ps1 -RetentionDays 90        # purge les messages remis de plus de 90 jours
 #
 # Astuce : pour le pare-feu, -Service et -Persist, ouvre PowerShell « en tant qu'administrateur ».
 # Le monitoring web est ensuite disponible sur http://<ip>:<port>/
@@ -20,6 +21,7 @@
 param(
     [int]$Port = 7777,
     [string]$Token = "",
+    [int]$RetentionDays = 0, # purge des messages entièrement remis plus vieux que N jours (0 = jamais)
     [switch]$Service,        # installe le broker comme VRAI service Windows (NSSM) : auto-démarrage sans session ouverte
     [switch]$RemoveService,  # désinstalle le service Windows MailboxBroker
     [switch]$DownloadNssm,   # autorise le téléchargement de nssm.exe s'il est absent de vendor/nssm
@@ -148,6 +150,7 @@ if ($Persist) {
         $taskName = "MailboxBroker"
         $envPrefix = "`$env:MAILBOX_PORT=$Port; "
         if ($Token) { $envPrefix += "`$env:MAILBOX_TOKEN='$Token'; " }
+        if ($RetentionDays -gt 0) { $envPrefix += "`$env:MAILBOX_RETENTION_DAYS=$RetentionDays; " }
         $psCmd = "$envPrefix node `"$brokerJs`""
         $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
             -Argument "-NoProfile -WindowStyle Hidden -Command `"$psCmd`""
@@ -185,6 +188,7 @@ if ($Service) {
     # Variables d'environnement du service (une chaîne, séparées par des retours ligne).
     $envLines = @("MAILBOX_PORT=$Port")
     if ($Token) { $envLines += "MAILBOX_TOKEN=$Token" }
+    if ($RetentionDays -gt 0) { $envLines += "MAILBOX_RETENTION_DAYS=$RetentionDays" }
     & $nssm set $ServiceName AppEnvironmentExtra ($envLines -join "`n") | Out-Null
     # Journalise la sortie du broker dans data\ (pratique pour diagnostiquer).
     $logDir = Join-Path $srcDir 'data'
@@ -207,9 +211,10 @@ if ($Service) {
 if (-not $NoStart) {
     $env:MAILBOX_PORT = "$Port"
     if ($Token) { $env:MAILBOX_TOKEN = $Token }
+    if ($RetentionDays -gt 0) { $env:MAILBOX_RETENTION_DAYS = "$RetentionDays" }
     Write-Host "`n🚀 Lancement du broker (Ctrl+C pour arrêter)...`n" -ForegroundColor Green
     Write-Host "   👉 Interface web (tout se pilote ici) : http://localhost:$Port/" -ForegroundColor Cyan
-    Write-Host "      (onglet « Serveur » pour installer le service, « Config client » pour brancher les machines)`n"
+    Write-Host "      (vue « Serveur & service » pour installer le service, « Brancher un client » pour les machines)`n"
     # Ouvre la page web dans le navigateur par défaut (l'UI prend le relais).
     try { Start-Process "http://localhost:$Port/" | Out-Null } catch { }
     node $brokerJs

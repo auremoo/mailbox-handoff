@@ -1,4 +1,4 @@
-# start-server.ps1 — lanceur « double-clic » du broker (appelé par start-server.cmd).
+﻿# start-server.ps1 — lanceur « double-clic » du broker (appelé par start-server.cmd).
 #
 # 1. s'auto-élève en Administrateur (nécessaire pour le pare-feu et pour installer
 #    le service Windows ensuite depuis l'interface web) ;
@@ -6,8 +6,8 @@
 #    ouvre le port au pare-feu, OUVRE LA PAGE WEB, puis lance le broker.
 #
 # Idée : après ce double-clic, tout se pilote dans la page web (onglet « Serveur »
-# pour transformer le broker en service Windows permanent, « Config client » pour
-# brancher les machines, « Guide » pour les tutos).
+# « Serveur & service » pour transformer le broker en service Windows permanent,
+# « Brancher un client » pour les machines, « Guide » pour les tutos).
 
 param([int]$Port = 7777, [string]$Token = "")
 

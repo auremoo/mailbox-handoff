@@ -4,10 +4,14 @@
 > Vous pouvez l'utiliser, le modifier et le redistribuer librement, **à condition de
 > conserver la mention de l'auteur** (voir [LICENSE](LICENSE) et [AUTHORS](AUTHORS)).
 
-Messagerie **asynchrone inter-agents Claude Code**. Permet à plusieurs instances de
-Claude Code — chacune ouverte sur un projet différent mais lié (par ex. `server`,
-`frontend`, `automate`) — de **s'échanger des messages pour s'aligner** : changement
-de contrat d'API, nouveau schéma de données, décision d'architecture, etc.
+Messagerie **asynchrone entre agents Claude Code**. Plusieurs instances de Claude Code,
+chacune ouverte sur un projet différent mais lié (par ex. `server`, `frontend`,
+`automate`), sur la même machine ou sur le réseau local, **s'échangent des messages pour
+s'aligner** : changement de contrat d'API, nouveau schéma de données, décision
+d'architecture…
+
+> 🎓 **Première fois ?** Suis le **[tutoriel](TUTORIEL.md)** : un vrai échange entre deux
+> agents, sur une seule machine, en 15 minutes.
 
 > À ne pas confondre avec la commande `/handoff` (qui passe le relais d'une session
 > Claude vers un autre LLM via un `CONTEXT.md`). Ici on fait communiquer **plusieurs
@@ -15,362 +19,302 @@ de contrat d'API, nouveau schéma de données, décision d'architecture, etc.
 
 ---
 
-## 🧭 Principe
-
-Un petit **broker** réseau (Node.js, zéro dépendance) tient les boîtes aux lettres.
-Chaque agent l'utilise via deux mécanismes côté client :
-
-- **Réception (automatique)** — un hook PowerShell (`SessionStart` + `UserPromptSubmit`)
-  interroge le broker à chaque prise de main de l'agent, injecte les messages non lus
-  dans son contexte, puis les acquitte. Effet « push » sans rien lancer.
-- **Envoi (fire-and-forget)** — deux options au choix (et cumulables) :
-  - la **commande** `/msg <projet> <texte>` (script PowerShell), ou
-  - la **façade MCP** : des *tools* natifs (`mailbox_send`, `mailbox_inbox`,
-    `mailbox_ack`, `mailbox_registry`) que l'agent appelle directement, sans script.
+## 🧭 Comment ça marche
 
 ```
-        ┌──────────────────────────────────────┐
-        │   BROKER  (node broker/server.js)      │
-        │   http://<hôte-LAN>:7777               │
-        │   POST /messages   GET /inbox/<proj>   │
-        │   POST /ack        POST /register      │
-        └───────▲───────────▲───────────▲────────┘
-                │           │           │   (réseau LAN)
-        ┌───────┴──┐  ┌─────┴────┐  ┌───┴──────┐
-        │  server  │  │ frontend │  │ automate │
-        │  agent   │  │  agent   │  │  agent   │
-        └──────────┘  └──────────┘  └──────────┘
-   chaque projet : .mailbox.json + hook de réception + commande /msg
+        ┌───────────────────────────────────────────┐
+        │  BROKER  (node broker/server.js)          │
+        │  http://<hôte-LAN>:7777                   │
+        │  boîtes aux lettres SQLite + page web     │
+        └───────▲───────────────▲───────────────▲───┘
+                │               │               │      (LAN)
+        ┌───────┴──┐      ┌─────┴────┐     ┌────┴─────┐
+        │  server  │      │ frontend │     │ automate │   un agent Claude Code
+        │  agent   │      │  agent   │     │  agent   │   par projet rattaché
+        └──────────┘      └──────────┘     └──────────┘
+   réception : hook à chaque prompt · envoi : /msg ou tools MCP mailbox_*
 ```
 
-> ⚠️ **Limite assumée.** Un agent Claude Code ne « pense » que pendant son tour de
-> parole — il ne peut pas écouter en continu. Un message est donc remis à un agent
-> **à sa prochaine prise de main** (nouveau prompt ou nouvelle session), pas en
-> temps réel. C'est de l'asynchrone, pas du chat instantané.
+- **Broker** : un petit serveur Node.js qui garde les messages (SQLite) et sert une
+  interface web de suivi.
+- **Réception automatique** : un hook Claude Code (`SessionStart` + `UserPromptSubmit`)
+  relève les non-lus à chaque prise de main de l'agent, les injecte dans son contexte, puis
+  les acquitte **au nom de ce projet**.
+- **Envoi** : la commande `/msg <projet> <texte>`, ou les tools MCP (`mailbox_send`,
+  `mailbox_reply`…) que l'agent appelle de lui-même quand tu lui demandes en langage naturel.
+
+> ⚠️ **Limite assumée.** Un agent ne « pense » que pendant son tour de parole : il ne peut
+> pas écouter en continu. Un message lui est remis **à sa prochaine prise de main**
+> (nouveau prompt ou nouvelle session). C'est de l'asynchrone, pas du chat instantané.
 
 ---
 
-## 🚀 Démarrage (tout se pilote dans l'interface web)
+## 🚀 Installation
 
-Tout se fait dans une **page web** servie par le broker (monitoring, installation du
-service, branchement des clients, guide). La **seule** action hors navigateur est **un
-double-clic** pour démarrer le serveur — une page web ne peut pas se lancer toute seule.
+**Prérequis :** Windows, **Node.js ≥ 18** sur la machine broker (et de préférence sur les
+clients : le hook Node est environ 4× plus rapide que la version PowerShell, et les tools
+MCP en ont besoin).
 
-> ### ⚙️ Prérequis (machine serveur uniquement)
-> **Node.js ≥ 18** installé (https://nodejs.org, LTS). C'est tout : `start-server.cmd`
-> s'occupe du reste (dépendances `npm`, pare-feu, élévation Administrateur).
-
-### 1️⃣ Serveur — un double-clic
+### 1. Serveur : un double-clic
 
 Sur la machine qui héberge la messagerie, dans le dossier `mailbox-handoff` :
-**double-clique sur `start-server.cmd`** et accepte l'invite Windows (UAC).
+**double-clique sur `start-server.cmd`** et accepte l'invite Windows (UAC). Le script
+installe les dépendances, ouvre le port au pare-feu, démarre le broker et ouvre la page web
+`http://localhost:7777/`.
 
-→ Il installe les dépendances, ouvre le port au pare-feu, démarre le broker et **ouvre
-automatiquement la page web** sur `http://localhost:7777/`.
+Pour qu'il démarre tout seul au boot : dans la page web, vue **Serveur & service →
+Installer le service**.
 
-### 2️⃣ Tout le reste, dans la page web
+### 2. Clients : un double-clic par projet
 
-| Onglet            | Ce que tu y fais                                                            |
-|-------------------|-----------------------------------------------------------------------------|
-| **Serveur**       | Bouton **« Installer le service »** → le broker devient un vrai service Windows (démarre seul au boot, même sans session ouverte). |
-| **Config client** | Remplis projet / chemin / canaux → **« Télécharger le .cmd »** (ou copie la commande) pour brancher une machine cliente. |
-| **Fils / Registre / Envoyer** | Suivre les conversations, voir les projets/canaux connus, tester un envoi ou une réponse. |
-| **Guide**         | Tutoriels intégrés : install & **mises à jour** (serveur + client), service, canaux, dépannage. |
+Sur chaque machine où un agent travaille :
 
-### 3️⃣ Client — un double-clic
+1. dans la page web, vue **Brancher un client** : renseigne le projet, le **chemin du
+   projet** et les canaux, puis télécharge le `.cmd` ;
+2. place le `.cmd` dans le dossier `mailbox-handoff` de la machine cliente et double-clique ;
+3. **recharge la session Claude Code** du projet, et accepte le serveur MCP « mailbox ».
 
-Sur chaque machine cliente (= là où un agent Claude Code travaille sur ton projet) :
+Ou en ligne de commande :
 
-1. dans l'onglet **Config client** de la page web, télécharge le **`.cmd`** (pré-rempli pour ce projet) ;
-2. place-le dans le dossier `mailbox-handoff` de la machine cliente et **double-clique** ;
-3. **recharge la session Claude Code** du projet → réception automatique des messages + tools MCP actifs.
-
-> 💡 **Deux dossiers à ne pas confondre** : `mailbox-handoff` (la boîte à outils) vs **ton
-> vrai projet** (ton code — c'est lui que vise le champ « chemin », et c'est là que sont
-> déposés `.mailbox.json` / `.mcp.json`).
-
-> 💡 **Un agent tourne aussi sur la machine serveur ?** Broker et client sont indépendants —
-> branche le client en plus sur le serveur (dans Config client, mets le broker à `http://127.0.0.1:7777`).
-
-> 🔄 **Mettre à jour.** Serveur : `git pull` puis re-double-clic sur `start-server.cmd` (les
-> données sont migrées automatiquement). Client : re-télécharge le `.cmd` et double-clique.
-> Le pas-à-pas complet est dans l'onglet **Guide** de la page web.
-
----
-
-## 🧰 Alternative : en ligne de commande
-
-Tout ce que fait l'interface web est aussi disponible en scripts (pratique pour automatiser,
-ou si tu préfères le terminal). Les `.ps1` exigent d'autoriser l'exécution PowerShell une fois :
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` (ou `powershell -ExecutionPolicy Bypass -File …`).
-
-**Serveur** (PowerShell Administrateur, dossier `mailbox-handoff`) :
-```powershell
-.\setup-server.ps1                   # IP LAN + pare-feu + broker en avant-plan + ouvre l'UI
-.\setup-server.ps1 -Service          # VRAI service Windows (auto-démarrage, sans session) — via NSSM embarqué
-.\setup-server.ps1 -RemoveService    # désinstalle le service
-.\setup-server.ps1 -Token monjeton   # exige un jeton partagé (clients : -Token monjeton)
-.\setup-server.ps1 -Port 8080        # autre port
-```
-
-**Client** (sur la machine cliente, dossier `mailbox-handoff`) :
 ```powershell
 .\setup-client.ps1 -Project frontend -Broker http://192.168.1.10:7777 -ProjectDir D:\dev\mon-frontend -Channels auth
-.\setup-client.ps1                   # sans argument : pose les questions une par une
+.\setup-client.ps1        # sans argument : pose les questions une par une
 ```
-Recharge ensuite la session Claude Code du projet. Pour **mettre à jour / réparer** un client
-déjà installé : `.\install.ps1 -SkipProject`.
+
+> 💡 **Deux dossiers à ne pas confondre** : `mailbox-handoff` (la boîte à outils) et **ton
+> projet** (ton code). C'est ce dernier que vise `-ProjectDir` : c'est là que sont créés
+> `.mailbox.json` et `.mcp.json`.
+
+> 💡 **Un agent tourne aussi sur la machine broker ?** Branche-le comme n'importe quel
+> client, avec `-Broker http://127.0.0.1:7777`.
 
 ---
 
-## 🔧 Détail des scripts (équivalent bas niveau)
+## 💬 Utilisation
 
-### Lancer le broker à la main
-
-```powershell
-cd mailbox-handoff
-npm install   # une fois : installe better-sqlite3 (persistance SQLite du broker)
-npm start     # -> [mailbox] broker à l'écoute sur http://0.0.0.0:7777
-```
-
-> Le broker persiste désormais dans une base **SQLite** (`data/store.db`). Un ancien
-> `data/store.json` est **migré automatiquement** au premier démarrage (puis renommé
-> `.migrated`). `npm install` n'est requis que sur la **machine broker** ; les clients
-> PowerShell et la façade MCP n'ont aucune dépendance.
-
-Note l'**IP de cette machine** (`ipconfig`) et ouvre le port `7777` au pare-feu.
-Options (variables d'environnement) :
-
-| Variable        | Défaut                | Rôle                                            |
-|-----------------|-----------------------|-------------------------------------------------|
-| `MAILBOX_PORT`  | `7777`                | Port d'écoute                                    |
-| `MAILBOX_HOST`  | `0.0.0.0`             | Interface (laisser `0.0.0.0` pour le LAN)        |
-| `MAILBOX_DATA`  | `./data/store.db`     | Base SQLite persistante (un `.json` hérité est migré) |
-| `MAILBOX_TOKEN` | *(vide)*              | Jeton partagé : si défini, exigé par les clients |
-
-### Rattacher un projet à la main
-
-```powershell
-.\install.ps1 -Project server   -Broker http://192.168.1.10:7777 -ProjectDir C:\dev\mon-server
-.\install.ps1 -Project frontend -Broker http://192.168.1.10:7777 -ProjectDir C:\dev\mon-front
-.\install.ps1 -Project automate -Broker http://192.168.1.10:7777 -ProjectDir C:\dev\auto
-```
-
-L'installeur :
-1. copie `mailbox-check.ps1`, `mailbox-send.ps1` et le serveur `mailbox-mcp.js` dans `~/.claude/` ;
-2. branche les hooks `SessionStart` + `UserPromptSubmit` dans `~/.claude/settings.json`
-   (fusion non destructive) ;
-3. installe la commande `/msg` dans `~/.claude/commands/` ;
-4. crée le `.mailbox.json` du projet et l'enregistre auprès du broker ;
-5. branche le serveur MCP `mailbox` dans le `.mcp.json` du projet (fusion non destructive).
-
-> Si le broker exige un jeton, ajoute `-Token <jeton>` (identique à `MAILBOX_TOKEN`).
-> Après installation, **recharge la session Claude Code** du projet pour que les
-> tools MCP `mailbox_*` apparaissent.
-
-### 3. Utiliser
-
-Dans l'agent du projet `server`, au choix :
+Dans l'agent du projet `server` :
 
 ```
-# via la commande
 /msg frontend Le contrat de /orders a changé : "status" devient un enum (NEW|PAID|SHIPPED).
 ```
 
-ou en langage naturel si la façade MCP est branchée — l'agent appellera le tool
-`mailbox_send` tout seul :
+ou en langage naturel :
 
 ```
 Préviens le frontend que le contrat de /orders a changé : status devient un enum.
 ```
 
-À sa prochaine prise de main, l'agent `frontend` verra automatiquement :
+À sa prochaine prise de main, l'agent `frontend` reçoit :
 
 ```
 📬 1 message(s) inter-agents pour le projet « frontend » :
-─── de [server] le 2026-06-23T10:40:00Z
+
+─── [msg_00042] de [server] le 2026-06-23T10:40:00Z
 Le contrat de /orders a changé : "status" devient un enum (NEW|PAID|SHIPPED).
 ```
 
-Diffusion à tous les projets : `/msg * Le format de date passe en ISO 8601 partout.`
+**Répondre dans le fil**, sans retaper le destinataire :
+`/msg --reply msg_00042 Ok, je passe status en enum côté front.`, ou laisse l'agent
+appeler `mailbox_reply`. La réponse repart vers l'expéditeur, garde le même fil et hérite
+du sujet (`Re: …`).
 
-### 🧵 Répondre dans un fil (question/réponse)
+### Adressage
 
-Chaque message porte un `id` (affiché en tête, ex. `[msg_00042]`) et un `threadId`. Pour
-**répondre dans le fil** d'un message reçu — sans avoir à retaper le destinataire :
+| Destinataire | Qui reçoit                                          |
+|--------------|-----------------------------------------------------|
+| `frontend`   | le seul projet `frontend`                           |
+| `*`          | **tous** les projets (diffusion)                    |
+| `#auth`      | les projets **abonnés** au canal `auth`             |
 
-```
-/msg --reply msg_00042 Oui, je m'aligne, je passe status en enum côté frontend.
-```
+On s'abonne à un ou plusieurs canaux à l'installation du client (`-Channels auth,billing`).
 
-ou, si la façade MCP est branchée, l'agent appelle simplement le tool `mailbox_reply`
-(`replyTo: "msg_00042"`). La réponse repart vers l'expéditeur d'origine, garde le même
-`threadId` et hérite du sujet (`Re: …`). `mailbox_thread` permet de relire tout le fil.
+### Règles de remise
 
-## 📡 Canaux / sujets nommés
+- Chaque destinataire reçoit chaque message **une fois**, même si un autre l'a déjà lu
+  (accusés de lecture **par projet**).
+- On ne reçoit **pas ses propres envois** sur `*` ou sur un canal.
+- Un nouveau projet ne reçoit **pas l'historique** des diffusions et des canaux d'avant sa
+  première connexion. Ses **messages directs** l'attendent toujours.
+- Beaucoup de messages en attente ? Ils arrivent **par lots de 20** par prompt. Un message
+  de plus de 4000 caractères est tronqué dans le contexte (lecture complète :
+  `mailbox_thread`).
+- Si l'acquittement échoue, le message sera **remis à nouveau** : jamais de perte
+  silencieuse.
 
-En plus de l'adressage direct (`to: projet`) et de la diffusion (`*`), un message
-peut viser un **canal** nommé via la convention `#nom`. Seuls les projets **abonnés**
-à ce canal le reçoivent — idéal pour faire dialoguer des sous-groupes sur des sujets
-distincts.
+> Le cloisonnement par canal se fait **par abonnement**, ce n'est pas une barrière de
+> sécurité. Pour isoler strictement deux groupes, fais tourner un **broker par groupe** (ports
+> distincts) ou utilise un `MAILBOX_TOKEN` différent par groupe.
 
-**Exemple — 4 machines, 2 paires étanches :**
+---
+
+## 🌐 Interface web
+
+Servie par le broker sur **`http://<ip-du-broker>:<port>/`**. Page autonome, sans aucun
+asset externe.
+
+| Vue                    | À quoi ça sert                                                                 |
+|------------------------|--------------------------------------------------------------------------------|
+| **Conversations**      | Boîte mail regroupée par canal, diffusion ou paire de projets. Pour chaque message : **⏳ qui ne l'a pas encore reçu**, **✓ qui l'a lu**. Réponse en ligne. « Marquer vu » n'éteint que l'indicateur de la page, sans rien changer pour les agents. |
+| **Nouveau message**    | Envoyer un message de test ou une annonce.                                     |
+| **Brancher un client** | Génère le `.cmd` d'installation d'un client, ou la commande et les fichiers de config. |
+| **Serveur & service**  | Installer ou désinstaller le service Windows. Uniquement depuis `http://localhost` sur la machine broker, avec le broker lancé en Administrateur. |
+| **Projets & canaux**   | Registre des projets connus, de leurs canaux et de leur dernière activité.     |
+| **Guide**              | Installation, mises à jour, canaux, dépannage.                                 |
+
+Si le broker exige un jeton, la page le demande et l'ajoute à ses appels.
+
+---
+
+## ⚙️ Configuration
+
+### Broker (variables d'environnement)
+
+| Variable                 | Défaut            | Rôle                                                      |
+|--------------------------|-------------------|-----------------------------------------------------------|
+| `MAILBOX_PORT`           | `7777`            | Port d'écoute                                             |
+| `MAILBOX_HOST`           | `::`              | Interface d'écoute (`::` = IPv4 + IPv6, repli `0.0.0.0` automatique) |
+| `MAILBOX_DATA`           | `./data/store.db` | Base SQLite (un ancien `store.json` est migré automatiquement) |
+| `MAILBOX_TOKEN`          | *(vide)*          | Jeton partagé exigé des clients (en-tête `X-Mailbox-Token`) |
+| `MAILBOX_RETENTION_DAYS` | `0` (jamais)      | Purge les messages **entièrement remis** plus vieux que N jours |
+
+### Scripts
 
 ```powershell
-# Paire 1 (A, B) discute sur le canal "auth"
-.\setup-client.ps1 -Project A -Broker http://192.168.1.10:7777 -Channels auth -ProjectDir C:\dev\A
-.\setup-client.ps1 -Project B -Broker http://192.168.1.10:7777 -Channels auth -ProjectDir C:\dev\B
+# Serveur (PowerShell Administrateur, dossier mailbox-handoff)
+.\setup-server.ps1                     # IP LAN + pare-feu + broker au premier plan + ouvre l'UI
+.\setup-server.ps1 -Service            # vrai service Windows (NSSM embarqué)
+.\setup-server.ps1 -RemoveService      # désinstalle le service
+.\setup-server.ps1 -Token monjeton     # exige un jeton (clients : -Token monjeton)
+.\setup-server.ps1 -RetentionDays 90   # purge des messages remis de plus de 90 jours
+.\setup-server.ps1 -Port 8080          # autre port
 
-# Paire 2 (C, D) discute sur le canal "billing"
-.\setup-client.ps1 -Project C -Broker http://192.168.1.10:7777 -Channels billing -ProjectDir C:\dev\C
-.\setup-client.ps1 -Project D -Broker http://192.168.1.10:7777 -Channels billing -ProjectDir C:\dev\D
+# Client
+.\setup-client.ps1 -Project <nom> -Broker <url> -ProjectDir <chemin> [-Channels a,b] [-Token t]
+.\install.ps1 -SkipProject                          # mettre à jour / réparer le client de la machine
+.\install.ps1 -SkipProject -HookRuntime powershell  # forcer le hook PowerShell (défaut : Node s'il est là)
 ```
 
-Ensuite, depuis A : `/msg #auth On migre le format des tokens.` → **seuls A et B**
-le voient. C et D, abonnés à `billing`, ne reçoivent rien. Un projet peut s'abonner à
-**plusieurs canaux** (`-Channels auth,billing`).
+Les `.ps1` exigent d'autoriser l'exécution PowerShell une fois :
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
-| Adressage      | Qui reçoit                                   |
-|----------------|-----------------------------------------------|
-| `frontend`     | le seul projet `frontend`                     |
-| `*`            | **tous** les projets                          |
-| `#auth`        | les projets **abonnés** au canal `auth`       |
+Ce que fait `install.ps1` (appelé par `setup-client.ps1`) :
 
-> Le cloisonnement par canal est **par convention/abonnement**, pas une barrière de
-> sécurité (rien n'empêche techniquement un projet de s'abonner à un canal ou
-> d'écrire dessus). Pour une isolation étanche « dure », fais tourner un **broker par
-> groupe** (ports distincts) ou utilise un `MAILBOX_TOKEN` différent par groupe.
+1. copie les hooks (`mailbox-check.js` / `.ps1`), `mailbox-send.ps1` et `mailbox-mcp.js`
+   dans `~/.claude/` ;
+2. branche le hook dans `~/.claude/settings.json`, sans toucher à tes autres hooks et sans
+   doublon ;
+3. installe la commande `/msg` dans `~/.claude/commands/` ;
+4. crée le `.mailbox.json` du projet et l'enregistre auprès du broker ;
+5. déclare le serveur MCP `mailbox` dans le `.mcp.json` du projet, sans toucher aux autres
+   serveurs.
 
----
-
-## 🌐 Interface web (monitoring, config & service)
-
-Le broker sert une **page web autonome** (zéro dépendance front, aucun asset externe) sur
-**`http://<ip-du-broker>:<port>/`** (aussi `/ui`). Elle ne remplace pas les scripts d'install
-(un navigateur ne peut ni déployer du code ni élever les privilèges), mais elle **outille**
-l'installation et l'exploitation. Navigation en **barre latérale**, regroupée pour bien
-**séparer la messagerie des configurations** :
-
-| Groupe          | Vue                  | À quoi ça sert                                                                 |
-|-----------------|----------------------|--------------------------------------------------------------------------------|
-| **Messagerie**  | **Conversations**    | Boîte mail : liste des fils (avec canal/destination) à gauche, fil à droite, **réponse en ligne** et « marquer lu ». |
-|                 | **Nouveau message**  | Composer un message (projet, `*` ou `#canal`).                                 |
-| **Configuration**| **Brancher un client** | **Générateur** : projet/chemin/canaux → **télécharge un `.cmd`** (ou la commande + snippets `.mailbox.json`/`.mcp.json`). |
-|                 | **Serveur & service**| **Installer/désinstaller le service Windows** (voir conditions ci-dessous).    |
-|                 | **Projets & canaux** | Registre des agents connus, leurs canaux, dernière activité.                   |
-| **Aide**        | **Guide**            | Tutoriels intégrés : install & màj serveur, install & màj client, service, canaux, fils. |
-
-> 🖥️ **Installer le service depuis l'UI** (onglet Serveur) n'est possible que :
-> 1. depuis la **machine serveur elle-même** (`http://localhost:<port>/` — les actions
->    d'admin sont refusées (403) depuis le LAN), et
-> 2. avec le broker lancé dans un **PowerShell Administrateur** (installer un service exige
->    l'élévation). L'onglet affiche l'état (Windows / Admin / nssm / service) et te le dit.
-
-> 🔐 Si le broker tourne avec `MAILBOX_TOKEN`, la page demande le jeton et l'ajoute à ses appels.
-> Modèle de confiance LAN : la page est accessible à tout le réseau, comme l'API.
-
-> 💡 **Le passage à une nouvelle version du broker** reste une étape en ligne de commande sur la
-> machine serveur (`git pull` + `npm install` + relance / `-Service`). La migration de l'ancien
-> `store.json` vers SQLite est **automatique** au 1er démarrage. Une fois le nouveau broker lancé,
-> la nouvelle UI (avec ces onglets) est disponible.
+> `.mailbox.json` et `.mcp.json` peuvent contenir le jeton : ajoute-les au `.gitignore` du
+> projet rattaché.
 
 ---
 
-## 🗂 Structure du dépôt
+## 🔄 Mettre à jour
+
+- **Serveur** : `git pull`, puis relance `start-server.cmd` (ou réinstalle le service). Les
+  données sont **migrées automatiquement**.
+- **Clients** : re-télécharge le `.cmd` et double-clique, ou `.\install.ps1 -SkipProject`.
+
+> ⚠️ **Passage en 0.2 : mets à jour tous les clients.** Avant la 0.2, le hook PowerShell ne
+> se lançait pas sous Windows PowerShell 5.1 (fichier sans BOM UTF-8), et une diffusion ou
+> un message de canal lu par un projet était caché aux autres. Le broker 0.2 accepte encore
+> les clients 0.1 (avec l'ancien comportement d'acquittement), mais seule la mise à jour du
+> client corrige ces deux problèmes.
+
+---
+
+## 📚 Référence
+
+### Tools MCP
+
+| Tool               | Rôle                                                                  |
+|--------------------|-----------------------------------------------------------------------|
+| `mailbox_send`     | Envoie un message à `<projet>`, `*` ou `#canal`.                       |
+| `mailbox_inbox`    | Lit la boîte (non-lus par défaut ; `markRead:true` pour acquitter ; `limit`). |
+| `mailbox_reply`    | Répond **dans le fil** d'un message reçu (destinataire déduit).        |
+| `mailbox_thread`   | Relit tout un fil de discussion.                                       |
+| `mailbox_ack`      | Marque des messages comme lus pour le projet courant.                  |
+| `mailbox_registry` | Liste les projets connus.                                              |
+
+`/msg` et les tools MCP passent par le **même broker** et sont interchangeables.
+
+### API du broker
+
+| Méthode | Route                                   | Rôle                                         |
+|---------|-----------------------------------------|----------------------------------------------|
+| `GET`   | `/health`                               | Sonde de vie (+ version, compteurs)          |
+| `POST`  | `/messages`                             | Déposer un message                           |
+| `POST`  | `/reply`                                | Répondre dans un fil                         |
+| `GET`   | `/inbox/:projet?status=unread&channels=…&limit=…` | Boîte d'un projet                  |
+| `POST`  | `/ack`                                  | Acquitter `{ ids, project }`                 |
+| `POST`  | `/messages/:id/ack`                     | Acquitter un message                         |
+| `GET`   | `/thread/:threadId`                     | Un fil complet                               |
+| `GET`   | `/conversations`, `/conversation?key=…` | Vue « boîte mail » (UI)                      |
+| `GET`   | `/threads`                              | Liste des fils (monitoring)                  |
+| `POST`  | `/register` · `GET` `/registry`         | Déclarer / lister les projets                |
+
+Schémas, codes d'erreur et règles détaillées : **[SPECS.md](SPECS.md)**.
+
+### Structure du dépôt
 
 ```
 mailbox-handoff/
 ├─ broker/
 │  ├─ server.js            # le broker (HTTP, Node.js)
-│  ├─ store.js             # persistance SQLite (better-sqlite3) + migration
-│  ├─ service.js           # install/désinstall du service Windows (NSSM) via /admin/*
-│  └─ ui.html              # interface web servie sur / (monitoring, config, guide)
-├─ vendor/
-│  └─ nssm/nssm.exe        # wrapper de service Windows (embarqué dans le dépôt)
-├─ start-server.cmd        # ▶ DOUBLE-CLIC : démarre le broker + ouvre l'UI (serveur)
-├─ start-server.ps1        # lanceur auto-élevé appelé par start-server.cmd
+│  ├─ store.js             # persistance SQLite (better-sqlite3) + migrations
+│  ├─ service.js           # service Windows (NSSM) via /admin/*
+│  └─ ui.html              # interface web servie sur /
 ├─ client/
-│  ├─ mailbox-check.ps1    # hook de réception (déployé vers ~/.claude/)
-│  └─ mailbox-send.ps1     # envoi par script (déployé vers ~/.claude/)
-├─ mcp/
-│  └─ mailbox-mcp.js       # façade MCP : tools mailbox_* (déployé vers ~/.claude/)
-├─ commands/
-│  └─ msg.md               # slash-command /msg (déployée vers ~/.claude/commands/)
-├─ data/                   # état runtime du broker (gitignoré)
-├─ setup-server.ps1        # install facile côté SERVEUR (IP + pare-feu + lancement)
-├─ setup-client.ps1        # install facile côté CLIENT (sonde broker + rattachement)
-├─ install.ps1             # installeur bas niveau (appelé par setup-client.ps1)
-├─ .mailbox.json.example   # gabarit de config projet
-├─ .mcp.json.example       # gabarit de config MCP projet
-├─ package.json
-├─ SPECS.md                # spécification technique (API, formats, états, MCP)
-├─ CLAUDE.md               # consignes pour les agents Claude Code
-└─ README.md
+│  ├─ mailbox-check.js     # hook de réception, version Node (défaut si Node est présent)
+│  ├─ mailbox-check.ps1    # hook de réception, version PowerShell (repli)
+│  └─ mailbox-send.ps1     # envoi par script (utilisé par /msg)
+├─ mcp/mailbox-mcp.js      # façade MCP : tools mailbox_*
+├─ commands/msg.md         # slash-command /msg
+├─ test/                   # tests d'acceptation (npm test)
+├─ vendor/nssm/nssm.exe    # wrapper de service Windows (embarqué)
+├─ start-server.cmd        # ▶ double-clic : démarre le broker + ouvre l'UI
+├─ setup-server.ps1        # installation serveur (IP, pare-feu, service, options)
+├─ setup-client.ps1        # installation client (vérifie le broker puis appelle install.ps1)
+├─ install.ps1             # installeur client bas niveau
+├─ TUTORIEL.md             # prise en main pas à pas
+├─ SPECS.md                # spécification technique
+└─ CLAUDE.md               # consignes pour les agents qui travaillent sur ce dépôt
 ```
 
-## 🧩 Façade MCP (tools natifs)
-
-Branchée par `install.ps1` dans le `.mcp.json` du projet, elle donne à l'agent
-quatre *tools* (transport stdio, identité passée via les variables d'env du `.mcp.json`) :
-
-| Tool                | Rôle                                                              |
-|---------------------|-------------------------------------------------------------------|
-| `mailbox_send`      | Envoie un message à `<projet>`, `*` (diffusion) ou `#canal`.       |
-| `mailbox_inbox`     | Lit la boîte (non-lus par défaut ; `markRead:true` pour acquitter).|
-| `mailbox_reply`     | Répond **dans le fil** d'un message reçu (destinataire déduit).    |
-| `mailbox_thread`    | Récupère tout un fil de discussion (par `threadId`).              |
-| `mailbox_ack`       | Marque lus des messages par leurs ids.                            |
-| `mailbox_registry`  | Liste les projets/agents connus.                                  |
-
-> Script (`/msg`) et façade MCP utilisent le **même broker** et sont
-> interchangeables — tu peux n'installer que l'un, ou les deux.
-
 ---
 
-## 🔌 API du broker (résumé)
-
-| Méthode | Route                          | Rôle                                   |
-|---------|--------------------------------|----------------------------------------|
-| `GET`   | `/health`                      | Sonde de vie                           |
-| `POST`  | `/messages`                    | Déposer un message                     |
-| `GET`   | `/inbox/:project?status=unread`| Lire la boîte d'un projet              |
-| `POST`  | `/messages/:id/ack`            | Acquitter un message                   |
-| `POST`  | `/ack`                         | Acquittement groupé (`{ ids: [...] }`) |
-| `POST`  | `/register`                    | Déclarer un projet                     |
-| `GET`   | `/registry`                    | Lister les projets connus              |
-
-Détails complets, schémas et codes d'erreur : voir [SPECS.md](SPECS.md).
-
----
-
-## 🧪 Vérifier rapidement
+## 🧪 Tester
 
 ```powershell
-# Le broker répond ?
-npm run health
+npm test          # tests d'acceptation : broker, MCP, hooks Node + PowerShell (Windows)
+npm run health    # le broker local répond ?
+```
 
-# Envoyer un message à la main
-Invoke-RestMethod -Uri http://192.168.1.10:7777/messages -Method Post `
-  -Body (@{from='test';to='frontend';body='ping'} | ConvertTo-Json) `
-  -ContentType 'application/json'
+À la main :
 
-# Lire la boîte
-Invoke-RestMethod -Uri "http://192.168.1.10:7777/inbox/frontend?status=unread"
+```powershell
+Invoke-RestMethod http://localhost:7777/messages -Method Post -ContentType application/json `
+  -Body (@{from='test';to='frontend';body='ping'} | ConvertTo-Json)
+Invoke-RestMethod "http://localhost:7777/inbox/frontend?status=unread"
 ```
 
 ---
 
 ## 🛡 Sécurité
 
-- Conçu pour un **LAN de confiance**. Pour exposer au-delà, mets un `MAILBOX_TOKEN`
-  et place le broker derrière un reverse-proxy TLS.
-- Le `.mailbox.json` peut contenir un jeton → il est **gitignoré** par défaut.
+- Conçu pour un **LAN de confiance**. Pour aller au-delà, définis un `MAILBOX_TOKEN` et
+  place le broker derrière un reverse-proxy TLS.
+- Les actions d'administration (service Windows) ne répondent qu'à la machine broker
+  elle-même (`localhost`).
 
 ## 🧱 Évolutions possibles
 
-- Push temps réel (SSE/WebSocket) en complément du pull par hook.
-- Purge/archivage automatique des vieux fils.
-- Authentification par utilisateur (au-delà du jeton partagé LAN).
+- Push temps réel (SSE/WebSocket) en complément du relevé par hook.
+- Authentification par utilisateur (au-delà du jeton partagé).
 
 ---
 
@@ -378,9 +322,9 @@ Invoke-RestMethod -Uri "http://192.168.1.10:7777/inbox/frontend?status=unread"
 
 **mailbox-handoff** est l'œuvre de **Aurélien Moote - Moo - 2026**.
 
-Distribué sous licence **MIT** : libre, gratuit, modifiable et redistribuable — la
-seule obligation est de **conserver la mention de copyright et de l'auteur** dans
-toute copie ou portion substantielle du logiciel. Merci de citer l'auteur sous la
-forme : **Aurélien Moote - Moo - 2026**.
+Distribué sous licence **MIT** : libre, gratuit, modifiable et redistribuable. La seule
+obligation est de **conserver la mention de copyright et de l'auteur** dans toute copie ou
+portion substantielle du logiciel. Merci de citer l'auteur sous la forme :
+**Aurélien Moote - Moo - 2026**.
 
 Voir [LICENSE](LICENSE) · [AUTHORS](AUTHORS) · dépôt : https://github.com/auremoo/mailbox-handoff

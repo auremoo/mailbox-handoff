@@ -1,4 +1,4 @@
-# mailbox-send.ps1 — Envoi d'un message à un autre agent (fire-and-forget).
+﻿# mailbox-send.ps1 — Envoi d'un message à un autre agent (fire-and-forget).
 #
 # Usage :
 #   mailbox-send.ps1 -To frontend -Body "Le contrat /orders a changé, voir schéma."
@@ -26,6 +26,14 @@ if (-not $ReplyTo -and -not $To) {
 }
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'   # la barre de progression d'Invoke-RestMethod est lente en PS 5.1
+try { [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy } catch { }  # broker LAN : pas de WPAD
+
+# Corps JSON en octets UTF-8 explicites : PowerShell 5.1 n'encode pas toujours
+# une chaîne en UTF-8, et les messages contiennent accents et emojis.
+function ConvertTo-Utf8Body($Object) {
+    [System.Text.Encoding]::UTF8.GetBytes(($Object | ConvertTo-Json -Compress))
+}
 
 $configPath = Join-Path $ProjectDir '.mailbox.json'
 if (-not (Test-Path $configPath)) {
@@ -33,25 +41,33 @@ if (-not (Test-Path $configPath)) {
     exit 1
 }
 
-$cfg = Get-Content $configPath -Raw | ConvertFrom-Json
+$cfg = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if (-not $cfg.project -or -not $cfg.broker) {
     Write-Error "[mailbox] .mailbox.json incomplet (champs 'project' et 'broker' requis)."
     exit 1
 }
 
-$broker  = $cfg.broker.TrimEnd('/')
+$broker  = ([string]$cfg.broker).TrimEnd('/') -replace '://localhost(?=[:/]|$)', '://127.0.0.1'
 $headers = @{}
 if ($cfg.token) { $headers['X-Mailbox-Token'] = $cfg.token }
 
+# Message d'erreur lisible : le broker renvoie { error } en JSON (ex. destinataire réservé).
+function Get-BrokerError($Err) {
+    if ($Err.ErrorDetails -and $Err.ErrorDetails.Message) {
+        try { return ($Err.ErrorDetails.Message | ConvertFrom-Json).error } catch { return $Err.ErrorDetails.Message }
+    }
+    return $Err.Exception.Message
+}
+
 # Réponse dans un fil : route dédiée /reply (destinataire déduit côté broker).
 if ($ReplyTo) {
-    $payload = @{ from = $cfg.project; replyTo = $ReplyTo; subject = $Subject; body = $Body } | ConvertTo-Json -Compress
+    $payload = ConvertTo-Utf8Body @{ from = $cfg.project; replyTo = $ReplyTo; subject = $Subject; body = $Body }
     try {
         $resp = Invoke-RestMethod -Uri "$broker/reply" -Method Post -Headers $headers `
             -Body $payload -ContentType 'application/json; charset=utf-8' -TimeoutSec 5
         Write-Host "✅ Réponse envoyée à « $($resp.to) » dans le fil $($resp.threadId) (id $($resp.id))."
     } catch {
-        Write-Error "[mailbox] Échec de la réponse vers $broker : $($_.Exception.Message)"
+        Write-Error "[mailbox] Échec de la réponse vers $broker : $(Get-BrokerError $_)"
         exit 1
     }
     exit 0
@@ -59,13 +75,13 @@ if ($ReplyTo) {
 
 $msg = @{ from = $cfg.project; to = $To; subject = $Subject; body = $Body }
 if ($ThreadId) { $msg['threadId'] = $ThreadId }
-$payload = $msg | ConvertTo-Json -Compress
+$payload = ConvertTo-Utf8Body $msg
 
 try {
     $resp = Invoke-RestMethod -Uri "$broker/messages" -Method Post -Headers $headers `
         -Body $payload -ContentType 'application/json; charset=utf-8' -TimeoutSec 5
     Write-Host "✅ Message envoyé à « $To » (id $($resp.id), fil $($resp.threadId)) depuis « $($cfg.project) »."
 } catch {
-    Write-Error "[mailbox] Échec de l'envoi vers $broker : $($_.Exception.Message)"
+    Write-Error "[mailbox] Échec de l'envoi vers $broker : $(Get-BrokerError $_)"
     exit 1
 }
