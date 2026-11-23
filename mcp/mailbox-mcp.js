@@ -50,7 +50,8 @@ function loadConfig() {
     const dirs = [process.env.CLAUDE_PROJECT_DIR, process.cwd()].filter(Boolean);
     for (const d of dirs) {
       try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(d, '.mailbox.json'), 'utf8'));
+        // install.ps1 écrit ce fichier avec Out-File -Encoding utf8 (BOM en PowerShell 5.1).
+        const cfg = JSON.parse(fs.readFileSync(path.join(d, '.mailbox.json'), 'utf8').replace(/^﻿/, ''));
         project = project || cfg.project;
         broker = broker || cfg.broker;
         token = token || cfg.token || null;

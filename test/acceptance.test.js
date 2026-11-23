@@ -80,6 +80,33 @@ function runHook(cmd, args, projectDir, stateDir, event = 'UserPromptSubmit') {
   return { code: r.status, ms: Date.now() - t0, stderr: r.stderr, out, ctx: out ? JSON.parse(out).hookSpecificOutput.additionalContext : '' };
 }
 
+// Lance la façade MCP et renvoie { rpc, call } (JSON-RPC ligne à ligne sur stdio).
+function startMcp(t, env, cwd) {
+  const mcp = spawn(process.execPath, [MCP], {
+    env: Object.assign({}, process.env, { MAILBOX_PROJECT: '', MAILBOX_BROKER: '', MAILBOX_CHANNELS: '', MAILBOX_TOKEN: '' }, env),
+    cwd, stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  t.after(() => mcp.kill());
+  let buf = '';
+  const waiting = new Map();
+  mcp.stdout.setEncoding('utf8');
+  mcp.stdout.on('data', (c) => {
+    buf += c;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const msg = JSON.parse(buf.slice(0, nl)); buf = buf.slice(nl + 1);
+      if (waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
+    }
+  });
+  let seq = 0;
+  const rpc = (method, params) => new Promise((resolve) => {
+    const id = ++seq; waiting.set(id, resolve);
+    mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  });
+  const call = async (name, args) => (await rpc('tools/call', { name, arguments: args })).result;
+  return { rpc, call };
+}
+
 function writeConfig(dir, cfg) {
   fs.writeFileSync(path.join(dir, '.mailbox.json'), '﻿' + JSON.stringify(cfg)); // BOM comme Out-File
 }
@@ -186,6 +213,29 @@ test('broker : envoi, remise et accusés par projet', async (t) => {
     assert.equal((await api(b, 'POST', '/reply', { from: 'x', replyTo: 'msg_99999', body: 'b' })).status, 404);
   });
 
+  await t.test('rev de /health : stable sur une simple relève, change à chaque écriture visible', async () => {
+    const rev = async () => (await api(b, 'GET', '/health')).data.rev;
+    const r0 = await rev();
+    assert.ok(r0, 'rev présent');
+    await inbox(b, 'frontend'); // lastSeen seul : rien à recharger côté monitoring
+    assert.equal(await rev(), r0);
+    const { data } = await send(b, { from: 'server', to: 'frontend', body: 'rev' });
+    const r1 = await rev();
+    assert.notEqual(r1, r0, 'nouveau message');
+    await ack(b, [data.id], 'frontend');
+    const r2 = await rev();
+    assert.notEqual(r2, r1, 'accusé');
+    await ack(b, [data.id], 'frontend'); // ré-ack idempotent : aucun changement
+    assert.equal(await rev(), r2);
+  });
+
+  await t.test('URL invalide ou mal encodée -> 400, le broker reste en vie', async () => {
+    assert.equal((await fetch(b.url + '//')).status, 400);
+    assert.equal((await fetch(b.url + '/inbox/%E0%A4%A')).status, 400);
+    assert.equal((await fetch(b.url + '/thread/%')).status, 400);
+    assert.equal((await api(b, 'GET', '/health')).status, 200);
+  });
+
   await t.test('vues de monitoring : conversations et fils cohérents', async () => {
     const convs = (await api(b, 'GET', '/conversations')).data.conversations;
     const auth = convs.find((c) => c.key === '#auth');
@@ -196,6 +246,33 @@ test('broker : envoi, remise et accusés par projet', async (t) => {
     assert.equal(pair.subject, 'Re: Q', 'dernier sujet non vide');
     const threads = (await api(b, 'GET', '/threads')).data.threads;
     assert.ok(threads.every((th) => th.count >= 1 && th.last && th.participants.length));
+  });
+
+  await t.test('limit sur /conversation et /threads : les plus récents, total signalé', async () => {
+    for (let i = 0; i < 5; i++) await send(b, { from: 'server', to: '#pages', body: `p${i}` });
+    const key = encodeURIComponent('#pages');
+    const all = (await api(b, 'GET', `/conversation?key=${key}`)).data;
+    assert.equal(all.count, 5);
+    assert.equal(all.total, 5, 'sans limit : tout, comme avant');
+    const page = (await api(b, 'GET', `/conversation?key=${key}&limit=2`)).data;
+    assert.deepEqual(page.messages.map((m) => m.body), ['p3', 'p4'], 'les 2 derniers, ordre chronologique');
+    assert.equal(page.total, 5);
+    assert.ok(Array.isArray(page.messages[0].readBy) && Array.isArray(page.messages[0].pending));
+    const wide = (await api(b, 'GET', `/conversation?key=${key}&limit=50`)).data;
+    assert.equal(wide.count, 5);
+    assert.equal(wide.total, 5);
+    const pair = encodeURIComponent('@frontend|server');
+    const direct = (await api(b, 'GET', `/conversation?key=${pair}&limit=1`)).data;
+    assert.equal(direct.count, 1);
+    assert.ok(direct.total >= 3);
+
+    const full = (await api(b, 'GET', '/threads')).data;
+    assert.equal(full.total, full.threads.length);
+    const top = (await api(b, 'GET', '/threads?limit=2')).data;
+    assert.equal(top.count, 2);
+    assert.equal(top.total, full.total);
+    assert.deepEqual(top.threads.map((th) => th.threadId), full.threads.slice(0, 2).map((th) => th.threadId), 'les fils les plus récemment actifs');
+    assert.equal(top.threads[0].last.body, 'p4');
   });
 });
 
@@ -274,28 +351,7 @@ test('8-10. façade MCP : handshake, 6 tools, envoi/lecture/ack', async (t) => {
   t.after(() => b.stop());
   await api(b, 'POST', '/register', { project: 'front', channels: ['auth'] });
 
-  const mcp = spawn(process.execPath, [MCP], {
-    env: Object.assign({}, process.env, { MAILBOX_PROJECT: 'front', MAILBOX_BROKER: b.url, MAILBOX_CHANNELS: 'auth', MAILBOX_TOKEN: '' }),
-    stdio: ['pipe', 'pipe', 'inherit'],
-  });
-  t.after(() => mcp.kill());
-  let buf = '';
-  const waiting = new Map();
-  mcp.stdout.setEncoding('utf8');
-  mcp.stdout.on('data', (c) => {
-    buf += c;
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const msg = JSON.parse(buf.slice(0, nl)); buf = buf.slice(nl + 1);
-      if (waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
-    }
-  });
-  let seq = 0;
-  const rpc = (method, params) => new Promise((resolve) => {
-    const id = ++seq; waiting.set(id, resolve);
-    mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-  });
-  const call = async (name, args) => (await rpc('tools/call', { name, arguments: args })).result;
+  const { rpc, call } = startMcp(t, { MAILBOX_PROJECT: 'front', MAILBOX_BROKER: b.url, MAILBOX_CHANNELS: 'auth' });
 
   const init = await rpc('initialize', { protocolVersion: '2025-06-18' });
   assert.equal(init.result.serverInfo.name, 'mailbox');
@@ -314,6 +370,15 @@ test('8-10. façade MCP : handshake, 6 tools, envoi/lecture/ack', async (t) => {
   assert.equal((await inbox(b, 'back')).messages[0].body, 'reçu 👍');
   const bad = await call('mailbox_send', { to: '#', body: 'x' });
   assert.equal(bad.isError, true);
+
+  await t.test('config par .mailbox.json seul, écrit avec BOM (comme install.ps1)', async (t2) => {
+    const project = tmpDir('mcpcfg');
+    writeConfig(project, { project: 'bomproj', broker: b.url, channels: ['auth'] });
+    const m = startMcp(t2, { CLAUDE_PROJECT_DIR: project }, project);
+    const res = await m.call('mailbox_send', { to: 'back', body: 'depuis le fichier' });
+    assert.ok(!res.isError, res.content[0].text);
+    assert.match(res.content[0].text, /depuis « bomproj »/);
+  });
 });
 
 // ---------------------------------------------------------------------------

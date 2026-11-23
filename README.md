@@ -246,15 +246,15 @@ Ce que fait `install.ps1` (appelé par `setup-client.ps1`) :
 
 | Méthode | Route                                   | Rôle                                         |
 |---------|-----------------------------------------|----------------------------------------------|
-| `GET`   | `/health`                               | Sonde de vie (+ version, compteurs)          |
+| `GET`   | `/health`                               | Sonde de vie (+ version, compteurs, `rev`)   |
 | `POST`  | `/messages`                             | Déposer un message                           |
 | `POST`  | `/reply`                                | Répondre dans un fil                         |
 | `GET`   | `/inbox/:projet?status=unread&channels=…&limit=…` | Boîte d'un projet                  |
 | `POST`  | `/ack`                                  | Acquitter `{ ids, project }`                 |
 | `POST`  | `/messages/:id/ack`                     | Acquitter un message                         |
 | `GET`   | `/thread/:threadId`                     | Un fil complet                               |
-| `GET`   | `/conversations`, `/conversation?key=…` | Vue « boîte mail » (UI)                      |
-| `GET`   | `/threads`                              | Liste des fils (monitoring)                  |
+| `GET`   | `/conversations`, `/conversation?key=…&limit=…` | Vue « boîte mail » (UI)              |
+| `GET`   | `/threads?limit=…`                      | Liste des fils (monitoring)                  |
 | `POST`  | `/register` · `GET` `/registry`         | Déclarer / lister les projets                |
 
 Schémas, codes d'erreur et règles détaillées : **[SPECS.md](SPECS.md)**.

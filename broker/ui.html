@@ -124,6 +124,7 @@
   .mpreview{display:none;padding:9px 14px;color:var(--muted);font-size:13px;cursor:pointer;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .msg.collapsed .mpreview{display:block}
+  .msgs .older{align-self:center;flex:0 0 auto}
   .replybar{border-top:1px solid var(--line);padding:12px 22px;background:var(--panel)}
   .replybar .row{display:flex;gap:8px;align-items:flex-end}
   .replybar .row > .grow{flex:1 1 auto}
@@ -376,6 +377,11 @@ var CONVOS = [];         // cache de /conversations (boîte mail regroupée)
 var FILTER = 'all';      // all | #canal | * | direct
 var CURRENT = null;      // clé de conversation ouverte
 var CURRENTCONV = null;  // objet conversation ouvert
+var REV = null;          // révision du broker (/health) pour laquelle les conversations sont à jour
+var SHOWN = {key:null,sig:''}; // conversation réellement affichée dans le panneau de détail
+var PAGE = 100;          // messages chargés à l'ouverture d'une conversation (les plus récents)
+var CONVLIMIT = PAGE;    // taille de la fenêtre demandée pour la conversation ouverte
+var OLDER = false;       // rechargement déclenché par « messages précédents »
 
 document.getElementById('token').value = TOKEN;
 
@@ -391,8 +397,11 @@ async function api(method,path,body){
   return d;
 }
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+// Argument JS dans un attribut onclick="…" : littéral JSON (apostrophes et antislashs
+// neutralisés) puis échappement HTML. Les noms de projet et de canal viennent du réseau.
+function arg(v){return esc(JSON.stringify(v));}
 function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(toast._t);toast._t=setTimeout(function(){t.classList.remove('show');},2400);}
-function saveToken(){TOKEN=document.getElementById('token').value.trim();sessionStorage.setItem('mbtoken',TOKEN);toast('Jeton enregistré.');refresh();}
+function saveToken(){TOKEN=document.getElementById('token').value.trim();sessionStorage.setItem('mbtoken',TOKEN);toast('Jeton enregistré.');refresh(true);}
 function fmtDate(s){if(!s)return'';var d=new Date(s);if(isNaN(d))return s;var now=new Date();
   var sameDay=d.toDateString()===now.toDateString();
   return sameDay? d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})
@@ -402,6 +411,7 @@ function fmtDate(s){if(!s)return'';var d=new Date(s);if(isNaN(d))return s;var no
 function go(view){
   document.querySelectorAll('.navitem').forEach(function(b){b.classList.toggle('active',b.dataset.view===view);});
   document.querySelectorAll('.view').forEach(function(s){s.classList.toggle('active',s.dataset.view===view);});
+  if(view==='conversations')refresh();
   if(view==='registry')loadRegistry();
   if(view==='server')loadAdmin();
   if(view==='clients'){fillDest();}
@@ -430,7 +440,19 @@ async function loadHealth(){
     var txt=n>0?(n+' non‑lu'+(n>1?'s':'')):'à jour';
     el.innerHTML='<span class="dot ok"></span><span>en ligne · '+txt+'</span>';
     setUnread(n);
-  }catch(e){el.innerHTML='<span class="dot err"></span><span>broker injoignable</span>';}
+    return h;
+  }catch(e){el.innerHTML='<span class="dot err"></span><span>broker injoignable</span>';return null;}
+}
+function convActive(){return document.querySelector('.view[data-view="conversations"]').classList.contains('active');}
+// Rafraîchissement : /health est léger ; les conversations ne sont rechargées que si
+// la révision du broker a changé (ou force), et rien ne tourne onglet masqué. Broker
+// injoignable : on garde la dernière liste affichée.
+async function refresh(force){
+  if(document.hidden&&!force)return;
+  var h=await loadHealth();
+  if(!h||!convActive())return;
+  if(!force&&h.rev&&h.rev===REV)return;
+  if(await loadConversations())REV=h.rev||null;
 }
 
 /* ---------- Conversations ---------- */
@@ -439,13 +461,16 @@ function destInfo(to){
   if(to&&to.charAt(0)==='#')return{cls:'chan',label:to,icon:'#'};
   return{cls:'dir',label:to||'?',icon:'→'};
 }
+// Renvoie true si la liste a pu être chargée.
 async function loadConversations(){
+  var ok=true;
   try{var d=await api('GET','/conversations');CONVOS=d.conversations||[];}
-  catch(e){CONVOS=[];}
+  catch(e){CONVOS=[];ok=false;}
   var unread=CONVOS.reduce(function(n,c){return n+(c.unread||0);},0);
   setUnread(unread);
   buildChips();renderConvList();
-  if(CURRENT){var still=CONVOS.some(function(c){return c.key===CURRENT;});if(still)openConv(CURRENT,true);}
+  if(CURRENT){var still=CONVOS.some(function(c){return c.key===CURRENT;});if(still)await openConv(CURRENT,true);}
+  return ok;
 }
 function buildChips(){
   var chans={};CONVOS.forEach(function(c){if(c.kind==='chan')chans[c.key]=1;});
@@ -453,7 +478,7 @@ function buildChips(){
   Object.keys(chans).sort().forEach(function(c){chips.push([c,c]);});
   chips.push(['*','Diffusion']);chips.push(['direct','Directs']);
   document.getElementById('convChips').innerHTML=chips.map(function(c){
-    return '<span class="chip'+(FILTER===c[0]?' active':'')+'" onclick="setFilter(\''+esc(c[0])+'\')">'+esc(c[1])+'</span>';
+    return '<span class="chip'+(FILTER===c[0]?' active':'')+'" onclick="setFilter('+arg(c[0])+')">'+esc(c[1])+'</span>';
   }).join('');
 }
 function setFilter(f){FILTER=f;buildChips();renderConvList();}
@@ -475,7 +500,7 @@ function renderConvList(){
   box.innerHTML=list.map(function(c){
     var title=c.kind==='dir'?esc(c.label):'<span class="tag '+clsOf(c)+'">'+esc(c.label)+'</span>';
     var snip=c.snippet?esc((c.lastFrom||'')+' : '+(c.snippet||'').replace(/\s+/g,' ').slice(0,90)):'';
-    return '<div class="conv-item'+(CURRENT===c.key?' active':'')+'" onclick="openConv(\''+esc(c.key).replace(/'/g,"\\'")+'\')">'+
+    return '<div class="conv-item'+(CURRENT===c.key?' active':'')+'" onclick="openConv('+arg(c.key)+')">'+
       '<div class="top">'+(c.unread>0?'<span class="udot"></span>':'')+
         '<span class="subj">'+title+'</span>'+
         (c.unread>0?'<span class="tag dir">'+c.unread+'</span>':'')+'</div>'+
@@ -493,9 +518,27 @@ async function openConv(key,keep){
   renderConvList();
   document.getElementById('conv').classList.add('detailopen');
   var det=document.getElementById('convDetail');
+  // On ne charge que les messages les plus récents (fenêtre de CONVLIMIT). Lors d'un
+  // rafraîchissement, la fenêtre s'agrandit du nombre de messages arrivés entre-temps :
+  // le haut de la liste ne glisse pas sous les yeux du lecteur.
+  var limit=PAGE;
+  if(keep&&SHOWN.key===key)limit=Math.max(CONVLIMIT,SHOWN.count+Math.max(0,(c.count||0)-SHOWN.total));
   var data;
-  try{data=await api('GET','/conversation?key='+encodeURIComponent(key));}catch(e){det.innerHTML='<div class="empty">Erreur de chargement.</div>';return;}
+  try{data=await api('GET','/conversation?key='+encodeURIComponent(key)+'&limit='+limit);}
+  catch(e){if(CURRENT===key){SHOWN={key:null,sig:''};det.innerHTML='<div class="empty">Erreur de chargement.</div>';}return;}
+  if(CURRENT!==key)return; // une autre conversation a été ouverte pendant le chargement
+  var older=OLDER;OLDER=false;
   var msgs=data.messages||[];
+  var total=data.total==null?msgs.length:data.total;
+  // Rafraîchissement (keep) d'une conversation déjà affichée : à contenu identique on ne
+  // touche pas au DOM ; sinon on conserve le brouillon, l'expéditeur choisi, les messages
+  // dépliés et le défilement (avant, chaque rafraîchissement effaçait la réponse en cours).
+  var sig=JSON.stringify([total,msgs]);
+  var same=keep&&SHOWN.key===key;
+  if(same&&SHOWN.sig===sig)return;
+  var st=same?convState():null;
+  SHOWN={key:key,sig:sig,count:msgs.length,total:total};
+  CONVLIMIT=limit;
   var last=msgs[msgs.length-1]||{};
   // Destinataire de la réponse selon le type de conversation.
   var replyTo,replyFrom;
@@ -512,25 +555,47 @@ async function openConv(key,keep){
     '<div class="dhead">'+
       '<button class="ghost sm" onclick="closeConv()" title="Retour">‹</button>'+
       '<span class="t">'+head+'</span>'+
-      '<span class="faint">'+msgs.length+' message(s)</span>'+
+      '<span class="faint">'+(total>msgs.length?msgs.length+' derniers sur '+total:total)+' message(s)</span>'+
       '<span class="spacer" style="flex:1"></span>'+
       (msgs.length>1?'<button class="ghost sm" onclick="expandAll(false)">Tout replier</button>'+
         '<button class="ghost sm" onclick="expandAll(true)">Tout déplier</button>':'')+
-      (unreadIds.length?'<button class="ghost sm" title="Éteint l\'indicateur non‑lu de cette page, sans rien changer pour les agents" onclick=\'ackConv('+JSON.stringify(unreadIds)+')\'>Marquer vu</button>':'')+
+      (unreadIds.length?'<button class="ghost sm" title="Éteint l\'indicateur non‑lu de cette page, sans rien changer pour les agents" onclick="ackConv('+arg(unreadIds)+')">Marquer vu</button>':'')+
     '</div>'+
-    '<div class="msgs" id="msgs">'+msgs.map(function(m,i){return renderMsg(m,i===msgs.length-1);}).join('')+'</div>'+
+    '<div class="msgs" id="msgs">'+
+      (total>msgs.length?'<button class="ghost sm older" onclick="loadOlder()">Afficher les messages précédents ('+(total-msgs.length)+')</button>':'')+
+      msgs.map(function(m,i){
+      var open=st&&(m.id in st.open)?st.open[m.id]:i===msgs.length-1;
+      return renderMsg(m,open);}).join('')+'</div>'+
     '<div class="replybar">'+
       '<div class="fromline"><label>Envoyer en tant que</label><input id="r_from" value="'+esc(replyFrom)+'" placeholder="projet">'+
         '<span class="faint">→ <span class="tag '+(c.kind==='chan'?'chan':c.kind==='bcast'?'bcast':'dir')+'">'+esc(c.kind==='dir'?replyTo:c.label)+'</span></span></div>'+
       '<div class="row"><textarea id="r_body" class="grow" placeholder="Ton message dans cette conversation…" style="min-height:60px"></textarea>'+
-        '<button onclick="sendConvReply(\''+esc(String(replyTo)).replace(/'/g,"\\'")+'\')">Envoyer</button></div>'+
+        '<button onclick="sendConvReply('+arg(String(replyTo))+')">Envoyer</button></div>'+
     '</div>';
-  var mc=document.getElementById('msgs');if(mc)mc.scrollTop=mc.scrollHeight;
+  var mc=document.getElementById('msgs');
+  if(st){
+    var rb=document.getElementById('r_body');
+    rb.value=st.body;document.getElementById('r_from').value=st.from;
+    if(st.focus){rb.focus();try{rb.setSelectionRange(st.sel[0],st.sel[1]);}catch(e){}}
+    // Messages précédents ajoutés en haut : on reste calé sur ce qu'on lisait.
+    mc.scrollTop=older?st.top+(mc.scrollHeight-st.height):(st.atEnd?mc.scrollHeight:st.top);
+  }else if(mc){mc.scrollTop=mc.scrollHeight;}
+}
+function loadOlder(){CONVLIMIT=SHOWN.count+PAGE*2;OLDER=true;openConv(CURRENT,true);}
+// État du panneau de détail à préserver lors d'un rafraîchissement.
+function convState(){
+  var rb=document.getElementById('r_body'),rf=document.getElementById('r_from'),mc=document.getElementById('msgs');
+  if(!rb||!rf||!mc)return null;
+  var open={};
+  mc.querySelectorAll('.msg').forEach(function(m){open[m.dataset.id]=!m.classList.contains('collapsed');});
+  return{body:rb.value,from:rf.value,open:open,top:mc.scrollTop,height:mc.scrollHeight,
+    atEnd:mc.scrollHeight-mc.scrollTop-mc.clientHeight<40,
+    focus:document.activeElement===rb,sel:[rb.selectionStart,rb.selectionEnd]};
 }
 function renderMsg(m,expanded){
   var di=destInfo(m.to);
   var preview=(m.body||'').replace(/\s+/g,' ').trim().slice(0,160);
-  return '<div class="msg'+(expanded?'':' collapsed')+'">'+
+  return '<div class="msg'+(expanded?'':' collapsed')+'" data-id="'+esc(m.id)+'">'+
     '<div class="mhead" onclick="toggleMsg(this)"><span class="chev">▾</span>'+
       '<span class="who">'+esc(m.from)+'</span><span class="arrow">→</span>'+
       '<span class="tag '+di.cls+'">'+esc(di.label)+'</span>'+
@@ -553,10 +618,10 @@ function deliveryTag(m){
 }
 function toggleMsg(el){var m=el.closest('.msg');if(m)m.classList.toggle('collapsed');}
 function expandAll(open){document.querySelectorAll('#msgs .msg').forEach(function(m){m.classList.toggle('collapsed',!open);});}
-function closeConv(){document.getElementById('conv').classList.remove('detailopen');CURRENT=null;CURRENTCONV=null;renderConvList();
+function closeConv(){document.getElementById('conv').classList.remove('detailopen');CURRENT=null;CURRENTCONV=null;SHOWN={key:null,sig:''};renderConvList();
   document.getElementById('convDetail').innerHTML='<div class="empty"><div class="big">💬</div><div>Sélectionne une conversation.</div></div>';}
 // monitorOnly : simple « vu » côté monitoring, n'acquitte RIEN au nom d'un agent.
-async function ackConv(ids){try{await api('POST','/ack',{ids:ids,monitorOnly:true});toast('Marqué(s) vu(s).');await loadConversations();loadHealth();}catch(e){}}
+async function ackConv(ids){try{await api('POST','/ack',{ids:ids,monitorOnly:true});toast('Marqué(s) vu(s).');await refresh(true);}catch(e){}}
 async function sendConvReply(to){
   var from=document.getElementById('r_from').value.trim();
   var body=document.getElementById('r_body').value.trim();
@@ -569,7 +634,7 @@ async function sendConvReply(to){
   }
   try{var r=await api('POST','/messages',{from:from,to:to,body:body});
     toast('Message envoyé à '+to+'.');document.getElementById('r_body').value='';
-    await loadConversations();loadHealth();openConv(CURRENT,true);}catch(e){}
+    await refresh(true);}catch(e){}
 }
 
 /* ---------- Compose ---------- */
@@ -580,7 +645,7 @@ async function sendNew(){
   if(!from||!to||!body){toast('« De », « À » et « Message » sont requis.');return;}
   try{var r=await api('POST','/messages',{from:from,to:to,subject:document.getElementById('s_subject').value.trim(),body:body});
     toast('Message envoyé (id '+r.id+').');document.getElementById('s_body').value='';document.getElementById('s_subject').value='';
-    loadConversations();loadHealth();go('conversations');}catch(e){}
+    go('conversations');}catch(e){}
 }
 function fillDest(){
   // datalist des destinations connues (projets + canaux + *)
@@ -667,15 +732,16 @@ async function removeService(){if(!confirm('Désinstaller le service MailboxBrok
   catch(e){srvMsg('⚠ '+esc(e.message),false);}loadAdmin();}
 
 /* ---------- Boot ---------- */
-function refresh(){loadHealth();loadConversations();}
 buildNav();
 document.getElementById('c_broker').value=location.origin;
 try{document.getElementById('brandPort').textContent=location.host;}catch(e){}
 genConfig();
 var initial=(location.hash||'').replace('#','');
 if(initial&&document.querySelector('.navitem[data-view="'+initial+'"]'))go(initial);
-refresh();
-setInterval(function(){loadHealth();if(document.querySelector('.view[data-view="conversations"]').classList.contains('active'))loadConversations();},12000);
+refresh(true);
+setInterval(function(){refresh();},12000);
+// Retour sur l'onglet : rattrapage immédiat (le rafraîchissement est suspendu onglet masqué).
+document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
 </script>
 </body>
 </html>

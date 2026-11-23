@@ -145,6 +145,12 @@ function parseChannels(input) {
   return [...new Set(arr.map(normalizeChannel).filter(Boolean))];
 }
 
+// Paramètre de requête ?limit=N : entier > 0, sinon 0 (= pas de limite).
+function parseLimit(url) {
+  const n = parseInt(url.searchParams.get('limit') || '0', 10);
+  return n > 0 ? n : 0;
+}
+
 // Crée et persiste un message en résolvant son fil de discussion.
 // Règle threadId : si parent (replyTo) -> hérite du fil du parent ; sinon si
 // threadId fourni -> utilisé ; sinon le message est racine (threadId == son id).
@@ -178,7 +184,9 @@ async function route(req, res, url) {
 
   // GET /health — sonde de vie, pas de token requis.
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, service: 'mailbox-broker', version: VERSION, messages: store.countMessages(), unread: store.countUnread() });
+    // rev : jeton opaque qui change quand les vues de monitoring ont bougé (l'UI
+    // ne recharge ses listes que dans ce cas).
+    return send(res, 200, { ok: true, service: 'mailbox-broker', version: VERSION, messages: store.countMessages(), unread: store.countUnread(), rev: store.getRev() });
   }
 
   // GET / et /ui — page de monitoring (HTML autonome). Pas de token : la page
@@ -207,9 +215,10 @@ async function route(req, res, url) {
     return send(res, 200, { projects: store.getRegistry() });
   }
 
-  // GET /threads — liste des fils (monitoring).
+  // GET /threads?limit=N — liste des fils (monitoring), les plus récemment actifs d'abord.
   if (req.method === 'GET' && url.pathname === '/threads') {
-    return send(res, 200, { threads: store.listThreads() });
+    const { threads, total } = store.listThreads(parseLimit(url));
+    return send(res, 200, { count: threads.length, total, threads });
   }
 
   // GET /conversations — vue "boîte mail" : messages regroupés par canal /
@@ -218,11 +227,12 @@ async function route(req, res, url) {
     return send(res, 200, { conversations: store.listConversations() });
   }
 
-  // GET /conversation?key=... — tous les messages d'une conversation, chronologiques.
+  // GET /conversation?key=...&limit=N — messages d'une conversation, chronologiques
+  // (avec limit : les N plus récents ; total = taille réelle de la conversation).
   if (req.method === 'GET' && url.pathname === '/conversation') {
     const key = url.searchParams.get('key') || '';
-    const items = store.getConversation(key);
-    return send(res, 200, { key, count: items.length, messages: items });
+    const { messages, total } = store.getConversation(key, parseLimit(url));
+    return send(res, 200, { key, count: messages.length, total, messages });
   }
 
   // Endpoints d'administration (gestion du service Windows) : réservés à la
@@ -296,12 +306,15 @@ async function route(req, res, url) {
     // Canaux auxquels ce projet est abonné : transmis par le client (sans état
     // de membership côté broker -> filtrage fiable quel que soit l'ordre).
     const channels = parseChannels(url.searchParams.get('channels'));
-    const limitRaw = parseInt(url.searchParams.get('limit') || '0', 10);
-    const limit = limitRaw > 0 ? Math.min(limitRaw, INBOX_MAX_LIMIT) : 0;
+    const limit = Math.min(parseLimit(url), INBOX_MAX_LIMIT);
     const meta = {};
     if (url.searchParams.has('channels')) meta.channels = channels;
-    store.upsertRegistry(project, meta); // persiste le lastSeen / channels
-    const { messages, total } = store.getInbox(project, channels, statusFilter || null, limit);
+    // Une seule transaction (un seul commit synchronisé) pour le lastSeen / channels
+    // et l'avance du curseur : cette route tourne à chaque prompt de chaque agent.
+    const { messages, total } = store.transaction(() => {
+      store.upsertRegistry(project, meta);
+      return store.getInbox(project, channels, statusFilter || null, limit);
+    });
     return send(res, 200, { project, count: messages.length, total, messages });
   }
 
@@ -347,8 +360,14 @@ runRetention();
 setInterval(runRetention, 3600_000).unref();
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://broker');
+  let url;
+  // Une cible invalide (ex. "//") fait lever new URL : sans ce garde-fou,
+  // l'exception non rattrapée arrêterait le broker.
+  try { url = new URL(req.url, 'http://broker'); }
+  catch { return send(res, 400, { error: 'URL invalide' }); }
   route(req, res, url).catch((err) => {
+    // Segment de chemin mal encodé (decodeURIComponent) : erreur du client, pas du broker.
+    if (err instanceof URIError) err = new HttpError(400, 'URL mal encodée');
     const status = err instanceof HttpError ? err.status : 500;
     if (status === 500) console.error('[mailbox] erreur interne :', err);
     if (!res.headersSent) send(res, status, { error: status === 500 ? 'erreur interne du broker' : err.message });
@@ -383,7 +402,10 @@ server.listen(PORT, HOST, onListening);
 
 function shutdown() {
   server.close(() => { store.close(); process.exit(0); });
-  setTimeout(() => process.exit(0), 2000).unref();
+  // Les connexions keep-alive inactives (page de monitoring ouverte) retiendraient
+  // server.close jusqu'au délai de secours.
+  if (server.closeIdleConnections) server.closeIdleConnections(); // Node >= 18.2
+  setTimeout(() => { store.close(); process.exit(0); }, 2000).unref();
 }
 process.on('SIGINT', () => { console.log('\n[mailbox] arrêt.'); shutdown(); });
 process.on('SIGTERM', shutdown);

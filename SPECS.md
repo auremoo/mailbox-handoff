@@ -140,8 +140,14 @@ caractères, qui ne vaut pas `*`, ne commence ni par `#` ni par `@` et ne contie
 (préfixes et séparateur réservés) → sinon `400`.
 
 ### `GET /health`
-→ `200 { "ok": true, "service": "mailbox-broker", "version": "0.2.0", "messages": <n>, "unread": <n> }`
+→ `200 { "ok": true, "service": "mailbox-broker", "version": "0.2.0", "messages": <n>, "unread": <n>, "rev": "<jeton>" }`
 (`unread` = messages pas encore remis à tous leurs destinataires connus.)
+
+`rev` est un **jeton opaque de révision** : il change à chaque écriture qui modifie une vue
+de monitoring (nouveau message, accusé, « Marquer vu », purge, projet ou canaux nouveaux),
+pas pour une simple relève (`lastSeen`). L'interface web interroge `/health` toutes les 12 s
+et ne recharge `/conversations` et la conversation ouverte que si `rev` a changé. À comparer
+par égalité uniquement (il repart d'une autre valeur à chaque démarrage du broker).
 
 ### `POST /messages`
 Corps : `{ "from", "to", "body", "subject?", "replyTo?", "threadId?" }`. `to` = nom de projet,
@@ -223,14 +229,19 @@ direct (`key = "@a|b"`, membres triés). Champs : `key`, `kind` (`chan`|`bcast`|
 → `200 { "conversations": [ … ] }`
 
 ### `GET /conversation?key=…`
-Tous les messages d'une conversation, chronologiques, avec `readBy` et `pending`.
-→ `200 { "key", "count", "messages": Message[] }`
+Les messages d'une conversation, chronologiques, avec `readBy` et `pending`.
+Query optionnelle : `limit=N` — seulement les **N messages les plus récents** (toujours
+renvoyés du plus ancien au plus récent). Sans `limit` : toute la conversation.
+→ `200 { "key", "count", "total", "messages": Message[] }` — `total` = taille réelle de la
+conversation (`total > count` : il reste des messages plus anciens). L'interface web ouvre
+une conversation sur ses 100 derniers messages et charge les précédents à la demande.
 
 ### `GET /threads`
 Liste les fils pour le monitoring : un objet par `threadId` avec `count`, `unread`, `subject`,
 `to`, `participants`, `lastAt` et le dernier message (`last`). Trié du fil le plus récemment
-actif au plus ancien.
-→ `200 { "threads": [ … ] }`
+actif au plus ancien. Query optionnelle : `limit=N` — seulement les N fils les plus
+récemment actifs.
+→ `200 { "count", "total", "threads": [ … ] }` — `total` = nombre réel de fils.
 
 ### `GET /` et `GET /ui`
 Servent la page de monitoring (`broker/ui.html`, HTML autonome). Pas de jeton requis pour la page
@@ -247,7 +258,7 @@ occupé par le broker courant) → bascule au prochain boot ou via `net start Ma
 arrêt du broker manuel.
 
 ### Erreurs
-- `400` corps JSON invalide, champ requis manquant ou nom réservé.
+- `400` corps JSON invalide, champ requis manquant, nom réservé, URL invalide ou mal encodée.
 - `401` jeton manquant/invalide.
 - `403` route d'administration appelée hors `localhost`.
 - `404` route ou ressource inconnue.
@@ -428,7 +439,13 @@ chaque groupe lance un vrai broker sur un port libre et une base temporaire). To
 4d. **Ack sans projet** (client 0.1) : direct attribué au destinataire, groupe lu pour tous.
 4e. **« Marquer vu »** (`monitorOnly`) : n'empêche aucune remise.
 4f. **Lot** : `limit` borne la réponse (plus anciens d'abord), `total` signale le reliquat.
-4g. **Validation** : noms réservés, champs manquants et JSON invalide → `400`.
+4g. **Validation** : noms réservés, champs manquants et JSON invalide → `400` ; une URL
+    invalide (`//`) ou mal encodée → `400` sans arrêter le broker.
+4h. **Révision** : `rev` de `/health` ne bouge pas sur une relève ni sur un ré-ack, change à
+    chaque nouveau message ou accusé.
+4i. **Pagination du monitoring** : `limit` sur `/conversation` renvoie les N derniers messages
+    (ordre chronologique) et sur `/threads` les N fils les plus récents ; `total` donne la
+    taille réelle ; sans `limit`, tout est renvoyé comme avant.
 5. **Hook silencieux** : projet sans `.mailbox.json` → hook ne produit rien (Node et PowerShell).
 6. **Résilience** : broker arrêté → note « broker injoignable », puis coupe-circuit (prompts
    suivants silencieux, rappel au `SessionStart`) ; jeton refusé → note « HTTP 401 ».
@@ -438,7 +455,8 @@ chaque groupe lance un vrai broker sur un port libre et une base temporaire). To
    liste les 6 tools.
 9. **MCP envoi/lecture** : `mailbox_inbox markRead:true` renvoie le message de canal et
    l'acquitte au nom du projet ; `mailbox_send` remet le message (UTF-8) ; une adresse
-   invalide → `isError`.
+   invalide → `isError`. Sans variables d'env, la config est lue dans un `.mailbox.json`
+   écrit avec BOM (tel que produit par `install.ps1`).
 10. **MCP résilience** : un retry absorbe une erreur de connexion transitoire.
     *(Non automatisé : à vérifier à la main en relançant le broker pendant un appel.)*
 11. **Threads** : `POST /messages` (racine) puis `POST /reply {replyTo}` ; `GET /thread/:id`

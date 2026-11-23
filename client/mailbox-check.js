@@ -18,8 +18,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const http = require('http');
-const https = require('https');
+// http/https sont chargés à la demande (dans request) : ce hook est global, il
+// tourne aussi à chaque prompt des projets NON rattachés, qui n'en ont pas besoin
+// (~5 ms par module au démarrage à froid).
 
 const MAX_MESSAGES = 20;     // messages injectés par prise de main
 const MAX_BODY_CHARS = 4000; // au-delà, corps tronqué (lecture complète via mailbox_thread)
@@ -34,7 +35,7 @@ function emit(event, text) {
 function request(method, url, headers, body) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
-    const lib = u.protocol === 'https:' ? https : http;
+    const lib = require(u.protocol === 'https:' ? 'https' : 'http');
     const payload = body ? Buffer.from(JSON.stringify(body), 'utf8') : null;
     const h = Object.assign({ Accept: 'application/json' }, headers);
     if (payload) { h['Content-Type'] = 'application/json; charset=utf-8'; h['Content-Length'] = payload.length; }

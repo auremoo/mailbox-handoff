@@ -80,6 +80,16 @@ function q(sql) {
   return s;
 }
 
+// Jeton de révision des données visibles dans le monitoring : change à chaque
+// écriture qui modifie une vue (message, accusé, « vu », purge, projet ou canaux
+// nouveaux) — pas pour un simple lastSeen. L'UI ne recharge ses listes que s'il a
+// bougé. Préfixé par l'heure de démarrage : après un redémarrage, il ne peut pas
+// retomber sur une valeur déjà vue par une page restée ouverte.
+const REV_BOOT = Date.now().toString(36);
+let revCount = 0;
+function touch() { revCount += 1; }
+function getRev() { return REV_BOOT + '.' + revCount; }
+
 function isGroupAddress(to) { return to === '*' || String(to).charAt(0) === '#'; }
 
 // Ligne SQL -> objet Message du contrat JSON (sender/recipient -> from/to).
@@ -148,6 +158,7 @@ function addMessage(msg) {
     threadId: msg.threadId,
     replyTo: msg.replyTo || null,
   });
+  touch();
   return msg;
 }
 
@@ -245,12 +256,14 @@ function receiptsFor(ids) {
 }
 
 // Passe messages.status à "read" si tous les destinataires connus ont lu (ou "*").
+// Renvoie true si le statut a basculé.
 function refreshStatus(row, readers, reg, now) {
-  if (row.status === 'read') return;
+  if (row.status === 'read') return false;
   const set = new Set(readers);
   const expected = expectedRecipients(row, reg);
   const done = set.has('*') || (expected.length ? expected.every((p) => set.has(p)) : set.size > 0);
   if (done) q("UPDATE messages SET status = 'read', readAt = ? WHERE id = ?").run(now, row.id);
+  return done;
 }
 
 // Acquittement idempotent. project fourni -> accusé à son nom (cas normal).
@@ -272,7 +285,9 @@ function ackIds(ids, project) {
     }
     const reg = loadRegistryForDelivery();
     const readers = receiptsFor(rows.map((r) => r.id));
-    for (const r of rows) refreshStatus(r, readers.get(r.id) || [], reg, now);
+    let flipped = false;
+    for (const r of rows) flipped = refreshStatus(r, readers.get(r.id) || [], reg, now) || flipped;
+    if (n || flipped) touch();
     return n;
   });
 }
@@ -281,8 +296,10 @@ function ackIds(ids, project) {
 // d'accusé -> n'empêche AUCUN agent de recevoir le message.
 function markSeen(ids) {
   if (!Array.isArray(ids) || !ids.length) return 0;
-  return q("UPDATE messages SET status = 'read', readAt = ? WHERE status <> 'read' AND id IN (SELECT value FROM json_each(?))")
+  const n = q("UPDATE messages SET status = 'read', readAt = ? WHERE status <> 'read' AND id IN (SELECT value FROM json_each(?))")
     .run(new Date().toISOString(), JSON.stringify(ids.map(String))).changes;
+  if (n) touch();
+  return n;
 }
 
 // Enrichit des Messages (vues globales) avec readBy (qui l'a lu) et pending
@@ -349,36 +366,60 @@ function listConversations() {
   }));
 }
 
-// Tous les messages d'une conversation, triés chronologiquement.
-function getConversation(key) {
-  let rows;
+// Messages d'une conversation, triés chronologiquement.
+// limit > 0 : seulement les `limit` plus récents (une longue conversation ne coûte
+// plus sa taille entière à chaque ouverture) ; total = taille réelle de la conversation.
+function getConversation(key, limit) {
+  let where;
+  let args;
   if (key === '*' || key.charAt(0) === '#') {
-    rows = q('SELECT * FROM messages WHERE recipient = ? ORDER BY createdAt ASC, rowid ASC').all(key);
+    where = 'recipient = ?';
+    args = [key];
   } else if (key.charAt(0) === '@') {
     const pair = key.slice(1).split('|');
-    rows = q(
-      "SELECT * FROM messages WHERE recipient NOT LIKE '#%' AND recipient <> '*' AND " +
-      '((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) ORDER BY createdAt ASC, rowid ASC'
-    ).all(pair[0], pair[1], pair[1], pair[0]);
+    where = "recipient NOT LIKE '#%' AND recipient <> '*' AND " +
+            '((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?))';
+    args = [pair[0], pair[1], pair[1], pair[0]];
   } else {
-    rows = [];
+    return { messages: [], total: 0 };
   }
-  return withDelivery(rows.map(rowToMsg));
+  if (!(limit > 0)) {
+    const all = q(`SELECT * FROM messages WHERE ${where} ORDER BY createdAt ASC, rowid ASC`).all(...args);
+    return { messages: withDelivery(all.map(rowToMsg)), total: all.length };
+  }
+  // Le tri pour trouver les N derniers ne porte que sur (createdAt, rowid) : les
+  // corps ne sont lus que pour les lignes retenues.
+  const rows = q(`SELECT * FROM messages
+                  WHERE rowid IN (SELECT rowid FROM messages WHERE ${where}
+                                  ORDER BY createdAt DESC, rowid DESC LIMIT ?)
+                  ORDER BY createdAt ASC, rowid ASC`).all(...args, limit);
+  const total = rows.length === limit
+    ? q(`SELECT COUNT(*) AS c FROM messages WHERE ${where}`).get(...args).c
+    : rows.length;
+  return { messages: withDelivery(rows.map(rowToMsg)), total };
 }
 
 // Liste des fils (monitoring) en une requête : compteurs, racine et dernier message.
-function listThreads() {
+// limit > 0 : seulement les `limit` fils les plus récemment actifs (le tri et la
+// coupe se font avant les jointures : on ne charge que les corps utiles).
+// Renvoie { threads, total } — total = nombre réel de fils.
+function listThreads(limit) {
+  const max = limit > 0 ? limit : -1; // -1 = sans limite en SQLite
   const rows = q(`
     SELECT t.threadId, t.count, t.unread, t.lastAt, t.participants,
            root.subject AS rootSubject, root.recipient AS rootTo, l.*
     FROM (SELECT threadId, COUNT(*) AS count, SUM(status = 'unread') AS unread,
                  MAX(createdAt) AS lastAt, MAX(rowid) AS lastRid,
                  json_group_array(DISTINCT sender) AS participants
-          FROM messages GROUP BY threadId) t
+          FROM messages GROUP BY threadId
+          ORDER BY lastAt DESC LIMIT ?) t
     JOIN messages l ON l.rowid = t.lastRid
     LEFT JOIN messages root ON root.id = t.threadId
-    ORDER BY t.lastAt DESC`).all();
-  return rows.map((r) => {
+    ORDER BY t.lastAt DESC`).all(max);
+  const total = max > 0 && rows.length === max
+    ? q('SELECT COUNT(DISTINCT threadId) AS c FROM messages').get().c
+    : rows.length;
+  const threads = rows.map((r) => {
     const last = rowToMsg(r);
     return {
       threadId: r.threadId,
@@ -392,6 +433,7 @@ function listThreads() {
       last,
     };
   });
+  return { threads, total };
 }
 
 // --- Registre -----------------------------------------------------------------
@@ -413,6 +455,8 @@ function upsertRegistry(project, meta) {
     ON CONFLICT(project) DO UPDATE SET
       host = excluded.host, role = excluded.role, channels = excluded.channels, lastSeen = excluded.lastSeen
   `).run({ project, host, role, channels, firstSeen, lastSeen: now });
+  // Un projet ou des canaux nouveaux changent les destinataires attendus (pending).
+  if (!existing || existing.channels !== channels) touch();
   return rowToRegistry({ project, host, role, channels, firstSeen, lastSeen: now });
 }
 
@@ -431,7 +475,9 @@ function purgeOlderThan(days) {
   const PURGEABLE = "status = 'read' AND createdAt < ? AND rowid < (SELECT MAX(rowid) FROM messages)";
   return transaction(() => {
     q(`DELETE FROM receipts WHERE messageId IN (SELECT id FROM messages WHERE ${PURGEABLE})`).run(cutoff);
-    return q(`DELETE FROM messages WHERE ${PURGEABLE}`).run(cutoff).changes;
+    const n = q(`DELETE FROM messages WHERE ${PURGEABLE}`).run(cutoff).changes;
+    if (n) touch();
+    return n;
   });
 }
 
@@ -527,5 +573,5 @@ function close() { if (db) { db.close(); db = null; stmts.clear(); } }
 module.exports = {
   init, close, transaction, nextId, addMessage, findMessage, getInbox, getThread,
   ackIds, markSeen, countMessages, countUnread, listThreads, listConversations, getConversation,
-  upsertRegistry, getRegistry, purgeOlderThan, isGroupAddress,
+  upsertRegistry, getRegistry, purgeOlderThan, isGroupAddress, getRev,
 };
